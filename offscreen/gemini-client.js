@@ -78,7 +78,7 @@ class GeminiClient {
     const generationConfig = { temperature: 0 };
     if (this.thinkingMode === undefined) this.thinkingMode = "level";
     if (this.thinkingMode === "level") {
-      generationConfig.thinkingLevel = "low";
+      generationConfig.thinkingConfig = { thinkingLevel: "low" };
     } else if (this.thinkingMode === "budget") {
       generationConfig.thinkingConfig = { thinkingBudget: 0 };
     }
@@ -113,9 +113,15 @@ class GeminiClient {
     this.lastFetchMs = performance.now() - fetchStart;
 
     if (response.status === 400 && this.thinkingMode !== "none") {
+      let why = "";
+      try {
+        why = (await response.clone().json())?.error?.message || "";
+      } catch (e) {
+        /* non-JSON body */
+      }
       const next = this.thinkingMode === "level" ? "budget" : "none";
       console.warn(
-        `⚠️ Model rejected thinking config "${this.thinkingMode}" — trying "${next}".`
+        `⚠️ Model rejected thinking config "${this.thinkingMode}" — trying "${next}". API said: ${why}`
       );
       this.thinkingMode = next;
       return this.transcribeChunk(wavBase64, chunkSeconds);
