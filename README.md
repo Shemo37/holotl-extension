@@ -33,16 +33,20 @@ One `generateContent` request per VAD-detected utterance; subtitles appear
 ~1–2 s after each line ends (lower the silence-cut slider to ~0.5 s for the
 snappiest feel).
 
-**Use a `-lite` model** (default: `gemini-3.5-flash-lite`). This is a hard
-requirement, not a preference: chunks arrive every ~4.5 s, so the API must
-answer faster than that or the drop-oldest queue overflows and audio is
-discarded. Non-lite Gemini 3 Flash cannot fully disable thinking
-(`thinkingLevel: "low"` is its floor; `thinkingBudget` is silently ignored)
-and measured 10–30 s per chunk — it can never keep up. Lite models don't
-think by default and answer in ~1 s. For non-lite models the client walks a
-thinking-config ladder (`minimal` → `low` → `thinkingBudget: 0` → none) and
-remembers what the model accepts; models with "lite" in the id get no
-thinking config at all, since it could only turn thinking on.
+**Model choice is a quality/latency trade.** The default
+`gemini-3.7-flash` gives the best translations but cannot fully disable
+thinking (`thinkingLevel: "low"` is its floor; `thinkingBudget` is silently
+ignored) and runs 10–30 s per chunk. The consumer loop keeps up regardless —
+up to 6 requests fly concurrently (2 for lite models) with results delivered
+in stream order — so a slow model costs subtitle *delay*, never dropped
+audio. For near-real-time subtitles (~1–2 s) switch Model id to
+`gemini-3.5-flash-lite`: lite models don't think by default and answer in
+about a second, at somewhat lower translation quality. For non-lite models
+the client walks a thinking-config ladder (`minimal` → `low` →
+`thinkingBudget: 0` → none) and remembers what the model accepts; models
+with "lite" in the id get no thinking config at all, since it could only
+turn thinking on. With a fast-talking streamer on a non-lite model, raise
+Requests/min toward 60 so dispatch spacing isn't the bottleneck.
 
 A Gemini **Live API** streaming engine (word-by-word partials via
 `gemini-3.5-transcribe-live`) existed briefly and was removed by request —

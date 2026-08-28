@@ -43,10 +43,11 @@ HOLOTL.PROMPTS = {
 
 HOLOTL.DEFAULT_SETTINGS = {
   apiKey: "",
-  // Lite is deliberate: it answers in ~1s (no default thinking), while
-  // non-lite Gemini 3 Flash can't fully disable thinking and takes 10-30s
-  // per chunk — slower than the ~4.5s chunk cadence, so the queue overflows.
-  geminiModel: "gemini-3.5-flash-lite",
+  // Best translation quality. It cannot fully disable thinking, so responses
+  // run 10-30s — the concurrent consumer loop (up to 6 in flight) absorbs
+  // that as subtitle delay instead of dropped audio. Swap to
+  // gemini-3.5-flash-lite for near-real-time (~1-2s) at lower quality.
+  geminiModel: "gemini-3.7-flash",
   outputMode: "translate", // translate | transcribe | both
   rpm: 30, // clamped 1-60
   priceInPer1M: 2.0, // USD per 1M input tokens (editable — verify against pricing docs)
