@@ -165,34 +165,76 @@ async function startCapture({ streamId, tabId, settings: rawSettings }) {
   );
 }
 
+// Requests overlap so a slow model doesn't throttle throughput: chunks
+// arrive every ~4.5s, and a non-lite model at 10-30s/response can only keep
+// up if several chunks are in flight at once. Results are delivered in
+// chunk order regardless of completion order.
 async function runConsumerLoop() {
   const { queue, client } = state;
-  try {
-    while (true) {
-      const item = await queue.take();
-      if (item === null) return; // queue closed — session over
+  const maxInflight = /lite/i.test(client.model) ? 2 : 6;
+  const inflight = new Set();
+  const results = new Map();
+  let seq = 0;
+  let nextToDeliver = 0;
+  let dead = null;
 
-      const wavBase64 = encodeWavBase64(item.samples);
-      console.log(`📤 sending ${item.durationS.toFixed(1)}s chunk (${queue.items.length} queued behind)`);
-      const text = await client.transcribeChunk(wavBase64, item.durationS);
-      if (text === null) continue; // cooldown or transient failure: chunk dropped
-      handleChunkedResponse(text, {
-        fetchMs: client.lastFetchMs || 0,
-        waitMs: client.lastWaitMs || 0,
-        queued: queue.items.length,
-      });
+  const deliverReady = () => {
+    while (results.has(nextToDeliver)) {
+      const r = results.get(nextToDeliver);
+      results.delete(nextToDeliver);
+      nextToDeliver++;
+      if (r !== null && state) handleChunkedResponse(r.text, r.timing);
     }
-  } catch (e) {
+  };
+
+  const die = async (e) => {
+    if (dead) return;
+    dead = e;
+    queue.close();
     if (e.name === "GeminiDead") {
       console.error("💀 Gemini engine dead:", e.message);
-      await persistTotals();
-      sendToSw("engine-status", { state: "dead", message: e.message });
     } else {
       console.error("🔴 Consumer loop error:", e);
-      await persistTotals();
-      sendToSw("engine-status", { state: "dead", message: `Pipeline error: ${e.message}` });
     }
+    await persistTotals();
+    sendToSw("engine-status", {
+      state: "dead",
+      message: e.name === "GeminiDead" ? e.message : `Pipeline error: ${e.message}`,
+    });
+  };
+
+  while (!dead) {
+    while (inflight.size >= maxInflight) await Promise.race(inflight);
+    const item = await queue.take();
+    if (item === null) break; // queue closed — session over
+
+    const wavBase64 = encodeWavBase64(item.samples);
+    const id = seq++;
+    console.log(
+      `📤 sending ${item.durationS.toFixed(1)}s chunk ` +
+        `(${inflight.size} in flight, ${queue.items.length} queued behind)`
+    );
+    const p = (async () => {
+      try {
+        const res = await client.transcribeChunk(wavBase64, item.durationS);
+        results.set(
+          id,
+          res === null
+            ? null // cooldown or transient failure: chunk dropped
+            : { text: res.text, timing: { fetchMs: res.fetchMs, waitMs: res.waitMs, queued: queue.items.length } }
+        );
+      } catch (e) {
+        results.set(id, null);
+        await die(e);
+      } finally {
+        inflight.delete(p);
+      }
+      deliverReady();
+    })();
+    inflight.add(p);
   }
+  await Promise.allSettled([...inflight]);
+  deliverReady();
 }
 
 function handleChunkedResponse(rawText, timing) {

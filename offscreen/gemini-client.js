@@ -52,24 +52,35 @@ class GeminiClient {
     return Date.now() < this.cooldownUntil;
   }
 
+  // Serializes request *spacing* while allowing overlapping flight — with
+  // concurrent callers, each acquires the next dispatch slot in turn.
   async rateLimit() {
-    const wait = this.lastRequestStart + this.minIntervalMs - Date.now();
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    this.lastRequestStart = Date.now();
+    const prev = this._rlChain || Promise.resolve();
+    let release;
+    this._rlChain = new Promise((r) => (release = r));
+    await prev;
+    try {
+      const wait = this.lastRequestStart + this.minIntervalMs - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.lastRequestStart = Date.now();
+    } finally {
+      release();
+    }
   }
 
   /**
-   * Transcribe/translate one chunk. Returns the raw response text ('' when
-   * Gemini decided there is no speech), or null when the chunk was skipped
-   * (cooldown, transient error). Throws GeminiDead when the engine is done
-   * for the session.
+   * Transcribe/translate one chunk. Returns {text, fetchMs, waitMs} on a
+   * response ('' text when Gemini decided there is no speech), or null when
+   * the chunk was skipped (cooldown, transient error). Throws GeminiDead
+   * when the engine is done for the session. Safe to call concurrently —
+   * dispatch spacing is serialized by rateLimit(), flight overlaps.
    */
   async transcribeChunk(wavBase64, chunkSeconds) {
     if (this.inCooldown) return null; // silent skip, chunk dropped
 
     const callStart = performance.now();
     await this.rateLimit();
-    this.lastWaitMs = performance.now() - callStart;
+    const waitMs = performance.now() - callStart;
 
     // Thinking burns seconds per chunk and adds nothing to transcription.
     // Gemini 3 models take thinkingLevel; 2.5-era models take thinkingBudget
@@ -94,8 +105,10 @@ class GeminiClient {
 
     const fetchStart = performance.now();
     // A hung request must not stall the pipeline silently — abort hard.
+    // 45s: non-lite models with thinking at its floor have been measured
+    // near 30s on hard audio; aborting those would strike a working session.
     const abort = new AbortController();
-    const abortTimer = setTimeout(() => abort.abort(), 30000);
+    const abortTimer = setTimeout(() => abort.abort(), 45000);
     let response;
     try {
       response = await fetch(
@@ -122,12 +135,12 @@ class GeminiClient {
       );
     } catch (e) {
       return this._strike(
-        e.name === "AbortError" ? "Request timed out after 30s" : `Network error: ${e.message}`
+        e.name === "AbortError" ? "Request timed out after 45s" : `Network error: ${e.message}`
       );
     } finally {
       clearTimeout(abortTimer);
     }
-    this.lastFetchMs = performance.now() - fetchStart;
+    const fetchMs = performance.now() - fetchStart;
 
     if (response.status === 400 && this.thinkingMode !== "none") {
       let why = "";
@@ -167,7 +180,7 @@ class GeminiClient {
         ?.map((p) => p.text || "")
         .join("") ?? "";
     this._accountCost(body.usageMetadata, chunkSeconds, text);
-    return text;
+    return { text, fetchMs, waitMs };
   }
 
   _handleHttpError(status, body) {
