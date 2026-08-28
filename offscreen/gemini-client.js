@@ -76,8 +76,17 @@ class GeminiClient {
     // and IGNORE thinkingLevel-style config. Walk the ladder once and
     // remember what the model accepted.
     const generationConfig = { temperature: 0 };
-    if (this.thinkingMode === undefined) this.thinkingMode = "level";
-    if (this.thinkingMode === "level") {
+    if (this.thinkingMode === undefined) {
+      // Lite models don't think by default, and a thinking config could only
+      // turn it ON — send nothing. Others walk the ladder below; note
+      // Gemini 3 non-lite Flash can NOT fully disable thinking ("low" is the
+      // floor and still costs seconds — measured 12-30s/chunk on
+      // gemini-3.7-flash), which is why lite is the recommended model here.
+      this.thinkingMode = /lite/i.test(this.model) ? "none" : "minimal";
+    }
+    if (this.thinkingMode === "minimal") {
+      generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
+    } else if (this.thinkingMode === "level") {
       generationConfig.thinkingConfig = { thinkingLevel: "low" };
     } else if (this.thinkingMode === "budget") {
       generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -127,7 +136,7 @@ class GeminiClient {
       } catch (e) {
         /* non-JSON body */
       }
-      const next = this.thinkingMode === "level" ? "budget" : "none";
+      const next = { minimal: "level", level: "budget", budget: "none" }[this.thinkingMode];
       console.warn(
         `⚠️ Model rejected thinking config "${this.thinkingMode}" — trying "${next}". API said: ${why}`
       );

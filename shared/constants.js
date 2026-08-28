@@ -43,7 +43,10 @@ HOLOTL.PROMPTS = {
 
 HOLOTL.DEFAULT_SETTINGS = {
   apiKey: "",
-  geminiModel: "gemini-3.7-flash",
+  // Lite is deliberate: it answers in ~1s (no default thinking), while
+  // non-lite Gemini 3 Flash can't fully disable thinking and takes 10-30s
+  // per chunk — slower than the ~4.5s chunk cadence, so the queue overflows.
+  geminiModel: "gemini-3.5-flash-lite",
   outputMode: "translate", // translate | transcribe | both
   rpm: 30, // clamped 1-60
   priceInPer1M: 2.0, // USD per 1M input tokens (editable — verify against pricing docs)
