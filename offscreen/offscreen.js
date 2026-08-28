@@ -196,8 +196,18 @@ async function runConsumerLoop() {
 
 function handleChunkedResponse(rawText, timing) {
   const { settings, deliveredHistory } = state;
+  const timingStr =
+    `[api ${(timing.fetchMs / 1000).toFixed(1)}s` +
+    (timing.waitMs > 100 ? `, ratelimit +${(timing.waitMs / 1000).toFixed(1)}s` : "") +
+    (timing.queued ? `, ${timing.queued} queued` : "") +
+    `]`;
   const text = stripDecorations(rawText);
-  if (!text) return; // Gemini decided there's no speech — silent skip
+  if (!text) {
+    // Gemini decided there's no speech — correct on music/silence, but log
+    // it so "no subtitles" is distinguishable from "no responses".
+    console.log(`🕳️ no speech in chunk ${timingStr}`);
+    return;
+  }
 
   let ja = null;
   let en = null;
@@ -235,7 +245,10 @@ function handleChunkedResponse(rawText, timing) {
     if (isHallucination(ja, deliveredHistory)) ja = null;
   }
 
-  if (!ja && !en) return;
+  if (!ja && !en) {
+    console.log(`🚫 filtered out: "${text.slice(0, 40)}" ${timingStr}`);
+    return;
+  }
 
   const mainLine = settings.outputMode === "transcribe" ? ja : en;
   if (mainLine) {
@@ -243,13 +256,7 @@ function handleChunkedResponse(rawText, timing) {
     if (deliveredHistory.length > 10) deliveredHistory.shift();
   }
 
-  console.log(
-    `💬 subtitle: "${(mainLine || ja || "").slice(0, 40)}" ` +
-      `[api ${(timing.fetchMs / 1000).toFixed(1)}s` +
-      (timing.waitMs > 100 ? `, ratelimit +${(timing.waitMs / 1000).toFixed(1)}s` : "") +
-      (timing.queued ? `, ${timing.queued} queued` : "") +
-      `]`
-  );
+  console.log(`💬 subtitle: "${(mainLine || ja || "").slice(0, 40)}" ${timingStr}`);
   sendToSw("subtitle", { ja, en, ts: Date.now() });
 }
 
