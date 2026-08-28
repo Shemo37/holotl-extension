@@ -1,0 +1,19 @@
+# Never commit secrets — the Gemini API key lives only in chrome.storage.local
+# at runtime, but guard against local config/scratch files carrying one.
+*.key
+.env
+.env.*
+secrets.json
+config.local.json
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+
+# Packaging output
+*.zip
+*.crx
+*.pem

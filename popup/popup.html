@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="title-row">
+        <span class="logo">Holo<span class="accent">TL</span></span>
+        <span class="status"><span id="statusDot" class="dot idle"></span><span id="statusText">Idle</span></span>
+      </div>
+      <div class="level-track"><div id="levelBar" class="level-bar"></div></div>
+    </header>
+
+    <button id="toggleBtn" class="primary">Start captioning this tab</button>
+    <div id="startHint" class="hint hidden">Enter a Gemini API key below to start.</div>
+
+    <section>
+      <h2>Gemini API</h2>
+      <label class="row">
+        <span>API key</span>
+        <span class="key-wrap">
+          <input type="password" id="apiKey" placeholder="AIza..." autocomplete="off" />
+          <button id="keyReveal" class="mini" title="Show/hide">👁</button>
+        </span>
+      </label>
+      <div class="hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>. Stored locally, never synced.</div>
+      <label class="row"><span>Model id</span><input type="text" id="geminiModel" /></label>
+      <div class="row">
+        <span>Output</span>
+        <span class="radio-group" id="outputMode">
+          <label><input type="radio" name="outputMode" value="translate" />EN</label>
+          <label><input type="radio" name="outputMode" value="transcribe" />JA</label>
+          <label><input type="radio" name="outputMode" value="both" />JA + EN</label>
+        </span>
+      </div>
+      <label class="row"><span>Requests/min</span><input type="number" id="rpm" min="1" max="60" step="1" /></label>
+      <label class="row"><span>$ / 1M in</span><input type="number" id="priceInPer1M" min="0" step="0.01" /></label>
+      <label class="row"><span>$ / 1M out</span><input type="number" id="priceOutPer1M" min="0" step="0.01" /></label>
+      <label class="row check"><input type="checkbox" id="includeRoster" /><span>Include Hololive JP name roster in prompt</span></label>
+      <div class="hint">Key and model changes apply on the next Start.</div>
+    </section>
+
+    <section>
+      <h2>Voice detection</h2>
+      <label class="row slider"><span>VAD threshold</span><input type="range" id="vadThreshold" min="0.05" max="0.95" step="0.05" /><output for="vadThreshold"></output></label>
+      <label class="row slider"><span>Volume gate</span><input type="range" id="volumeThreshold" min="0" max="0.02" step="0.001" /><output for="volumeThreshold"></output></label>
+      <label class="row slider"><span>Silence cut (s)</span><input type="range" id="silenceTimeoutS" min="0.3" max="2" step="0.1" /><output for="silenceTimeoutS"></output></label>
+      <label class="row slider"><span>Max chunk (s)</span><input type="range" id="maxChunkS" min="3" max="15" step="0.5" /><output for="maxChunkS"></output></label>
+      <label class="row slider"><span>Min speech (s)</span><input type="range" id="minSpeechS" min="0.1" max="1" step="0.05" /><output for="minSpeechS"></output></label>
+      <label class="row check"><input type="checkbox" id="enhanceAudio" /><span>Enhance audio before sending</span></label>
+    </section>
+
+    <section>
+      <h2>Overlay</h2>
+      <label class="row slider"><span>Font size (px)</span><input type="range" id="fontSizePx" min="12" max="48" step="1" /><output for="fontSizePx"></output></label>
+      <label class="row slider"><span>Auto-hide (s)</span><input type="range" id="autoHideS" min="2" max="30" step="1" /><output for="autoHideS"></output></label>
+      <button id="resetPos" class="secondary">Reset subtitle position</button>
+    </section>
+
+    <section class="cost">
+      <h2>Cost</h2>
+      <div class="cost-grid">
+        <div><span id="sessionUsd" class="big">$0.0000</span><span class="sub">this stream</span></div>
+        <div><span id="sessionReqs" class="big">0</span><span class="sub">requests</span></div>
+        <div><span id="totalUsd" class="big">$0.00</span><span class="sub">all time</span></div>
+      </div>
+      <div id="sessionTokens" class="hint">0 in / 0 out tokens</div>
+      <button id="resetTotals" class="secondary">Reset all-time total</button>
+    </section>
+
+    <section>
+      <h2>Debug</h2>
+      <pre id="debugLog" class="debug-log">(no log yet — press Start)</pre>
+      <button id="copyLog" class="secondary">Copy debug log</button>
+    </section>
+
+    <script src="../shared/constants.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

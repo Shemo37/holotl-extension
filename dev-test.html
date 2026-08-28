@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8" /><title>Silero VAD smoke test</title></head>
+  <body>
+    <pre id="out">running...</pre>
+    <script>
+      // Stub the extension API so vad.js resolves asset URLs against this
+      // static server instead of chrome-extension://.
+      window.chrome = { runtime: { getURL: (p) => "/" + p } };
+    </script>
+    <script src="libs/ort/ort.min.js"></script>
+    <script src="shared/constants.js"></script>
+    <script src="offscreen/vad.js"></script>
+    <script>
+      (async () => {
+        const out = [];
+        try {
+          const vad = new SileroVad();
+          const t0 = performance.now();
+          await vad.load();
+          out.push(`load ok in ${(performance.now() - t0).toFixed(0)}ms`);
+
+          const silence = new Float32Array(512);
+          const pSilence = await vad.probability(silence);
+          out.push(`silence prob: ${pSilence.toFixed(4)}`);
+
+          // White-noise burst — not speech, just checks the pipeline returns
+          // a sane number and state tensors round-trip.
+          const noise = new Float32Array(512);
+          for (let i = 0; i < 512; i++) noise[i] = (Math.random() * 2 - 1) * 0.3;
+          const t1 = performance.now();
+          let pNoise = 0;
+          for (let i = 0; i < 20; i++) pNoise = await vad.probability(noise);
+          out.push(`noise prob: ${pNoise.toFixed(4)}, per-frame: ${((performance.now() - t1) / 20).toFixed(2)}ms`);
+
+          const sane =
+            pSilence >= 0 && pSilence <= 1 && pNoise >= 0 && pNoise <= 1 && pSilence < 0.5;
+          out.push(sane ? "RESULT: PASS" : "RESULT: FAIL (probabilities out of range)");
+        } catch (e) {
+          out.push("RESULT: FAIL " + (e.stack || e.message));
+        }
+        document.getElementById("out").textContent = out.join("\n");
+      })();
+    </script>
+  </body>
+</html>
