@@ -31,10 +31,18 @@ Output modes: **EN** (translate), **JA** (transcribe verbatim), **JA + EN**
 
 One `generateContent` request per VAD-detected utterance; subtitles appear
 ~1–2 s after each line ends (lower the silence-cut slider to ~0.5 s for the
-snappiest feel). Requests disable model "thinking"
-(`thinkingConfig: {thinkingBudget: 0}`) — it added multiple seconds per call
-for zero transcription benefit; if a model rejects the field the client
-retries without it and remembers for the session.
+snappiest feel).
+
+**Use a `-lite` model** (default: `gemini-3.5-flash-lite`). This is a hard
+requirement, not a preference: chunks arrive every ~4.5 s, so the API must
+answer faster than that or the drop-oldest queue overflows and audio is
+discarded. Non-lite Gemini 3 Flash cannot fully disable thinking
+(`thinkingLevel: "low"` is its floor; `thinkingBudget` is silently ignored)
+and measured 10–30 s per chunk — it can never keep up. Lite models don't
+think by default and answer in ~1 s. For non-lite models the client walks a
+thinking-config ladder (`minimal` → `low` → `thinkingBudget: 0` → none) and
+remembers what the model accepts; models with "lite" in the id get no
+thinking config at all, since it could only turn thinking on.
 
 A Gemini **Live API** streaming engine (word-by-word partials via
 `gemini-3.5-transcribe-live`) existed briefly and was removed by request —
@@ -70,9 +78,10 @@ tab audio ──(tabCapture + offscreen document)──▶ AudioContext
 
 ## Settings notes
 
-- **Model id** defaults to `gemini-3.7-flash` and is editable. The dedicated
-  `gemini-3.5-transcribe` model is *not* supported in v1: it is served only
-  through the Interactions/Live APIs and cannot translate.
+- **Model id** defaults to `gemini-3.5-flash-lite` and is editable — but see
+  the latency requirement under Engine notes before picking a non-lite
+  model. The dedicated `gemini-3.5-transcribe` model is *not* supported: it
+  is served only through the Interactions/Live APIs and cannot translate.
 - API key and model changes apply on the next Start; everything else
   (VAD sliders, rpm, prices, output mode, overlay) applies live.
 - The Hololive JP roster toggle appends ~32 talent names to the prompt so
