@@ -63,23 +63,39 @@
       font-weight: 600;
     }
     .line:empty { display: none; }
+    .prev {
+      color: #ffffff;
+      opacity: 0.5;
+      font-weight: 500;
+      line-height: 1.3;
+      text-shadow: 0 0 4px rgba(0,0,0,0.9);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 4px;
+    }
+    .prev:empty { display: none; }
   `;
   shadow.appendChild(style);
 
   const box = document.createElement("div");
   box.className = "box";
+  const prevLine = document.createElement("div");
+  prevLine.className = "prev";
   const jaLine = document.createElement("div");
   jaLine.className = "line ja";
   const enLine = document.createElement("div");
   enLine.className = "line";
+  box.appendChild(prevLine);
   box.appendChild(jaLine);
   box.appendChild(enLine);
   shadow.appendChild(box);
+  let currentIsFinal = false; // partials must never be promoted to history
 
   function applySettings() {
     const size = settings.fontSizePx || DEFAULTS.fontSizePx;
     enLine.style.fontSize = size + "px";
     jaLine.style.fontSize = Math.round(size * 0.8) + "px";
+    prevLine.style.fontSize = Math.round(size * 0.7) + "px";
     if (overlayPos) {
       box.style.left = overlayPos.xPct + "%";
       box.style.top = overlayPos.yPct + "%";
@@ -96,7 +112,12 @@
 
   function scheduleHide() {
     if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => box.classList.remove("visible"), (settings.autoHideS || 6) * 1000);
+    hideTimer = setTimeout(() => {
+      box.classList.remove("visible");
+      // Stale text must not resurface as "previous" after a quiet gap.
+      prevLine.textContent = "";
+      currentIsFinal = false;
+    }, (settings.autoHideS || 6) * 1000);
   }
 
   function showSubtitle({ ja, en, partial }) {
@@ -104,9 +125,19 @@
       // Live word-by-word updates touch only the JP line — the last finished
       // translation stays readable on the EN line until the next one lands.
       jaLine.textContent = ja || "";
+      currentIsFinal = false;
     } else {
+      // When results arrive in a burst (an in-order delivery unblocking
+      // several at once), each line would instantly bury the last — keep the
+      // previous finished line visible, dimmed, above the current one.
+      if (currentIsFinal && (jaLine.textContent || enLine.textContent)) {
+        prevLine.textContent = [jaLine.textContent, enLine.textContent]
+          .filter(Boolean)
+          .join("\n");
+      }
       jaLine.textContent = ja || "";
       enLine.textContent = en || "";
+      currentIsFinal = true;
     }
     enLine.classList.remove("error");
     box.classList.toggle("partial", !!partial);
@@ -116,6 +147,7 @@
   }
 
   function showError(message) {
+    prevLine.textContent = "";
     jaLine.textContent = "";
     enLine.textContent = "⚠ HoloTL: " + (message || "Engine stopped.");
     enLine.classList.add("error");
