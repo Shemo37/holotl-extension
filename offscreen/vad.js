@@ -126,8 +126,14 @@ class DynamicChunker {
       isSpeech = false; // cheap gate: never run the model on near-silence
     } else if (this.vad) {
       const prob = await this.vad.probability(frame);
+      // Loud frames get a more sensitive threshold (shrieks and laughter are
+      // real speech the model can under-score) but they do NOT bypass the
+      // VAD: on tab audio, game BGM sits above the loud threshold
+      // continuously, and forcing speech there means silence is never
+      // detected — every chunk cuts at the max-length limit and the whole
+      // stream, music included, gets transcribed.
       const threshold = isLoudSound ? this.vadThreshold * 0.5 : this.vadThreshold;
-      isSpeech = prob > threshold || isLoudSound;
+      isSpeech = prob > threshold;
     } else {
       isSpeech = rms > this.volumeThreshold || isLoudSound;
     }

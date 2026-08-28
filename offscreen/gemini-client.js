@@ -67,15 +67,23 @@ class GeminiClient {
   async transcribeChunk(wavBase64, chunkSeconds) {
     if (this.inCooldown) return null; // silent skip, chunk dropped
 
+    const callStart = performance.now();
     await this.rateLimit();
+    this.lastWaitMs = performance.now() - callStart;
 
-    // Thinking burns seconds per chunk and adds nothing to transcription;
-    // disabled unless the model rejects the field (then remembered).
+    // Thinking burns seconds per chunk and adds nothing to transcription.
+    // Gemini 3 models take thinkingLevel; 2.5-era models take thinkingBudget
+    // and IGNORE thinkingLevel-style config. Walk the ladder once and
+    // remember what the model accepted.
     const generationConfig = { temperature: 0 };
-    if (this.thinkingOff !== false) {
+    if (this.thinkingMode === undefined) this.thinkingMode = "level";
+    if (this.thinkingMode === "level") {
+      generationConfig.thinkingLevel = "low";
+    } else if (this.thinkingMode === "budget") {
       generationConfig.thinkingConfig = { thinkingBudget: 0 };
     }
 
+    const fetchStart = performance.now();
     let response;
     try {
       response = await fetch(
@@ -102,11 +110,14 @@ class GeminiClient {
     } catch (e) {
       return this._strike(`Network error: ${e.message}`);
     }
+    this.lastFetchMs = performance.now() - fetchStart;
 
-    if (response.status === 400 && this.thinkingOff !== false) {
-      // Model doesn't accept thinkingConfig — drop it for the session, retry.
-      this.thinkingOff = false;
-      console.warn("⚠️ Model rejected thinkingConfig — retrying without it.");
+    if (response.status === 400 && this.thinkingMode !== "none") {
+      const next = this.thinkingMode === "level" ? "budget" : "none";
+      console.warn(
+        `⚠️ Model rejected thinking config "${this.thinkingMode}" — trying "${next}".`
+      );
+      this.thinkingMode = next;
       return this.transcribeChunk(wavBase64, chunkSeconds);
     }
 

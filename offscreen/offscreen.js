@@ -173,10 +173,13 @@ async function runConsumerLoop() {
       if (item === null) return; // queue closed — session over
 
       const wavBase64 = encodeWavBase64(item.samples);
-      const t0 = performance.now();
       const text = await client.transcribeChunk(wavBase64, item.durationS);
       if (text === null) continue; // cooldown or transient failure: chunk dropped
-      handleChunkedResponse(text, performance.now() - t0);
+      handleChunkedResponse(text, {
+        fetchMs: client.lastFetchMs || 0,
+        waitMs: client.lastWaitMs || 0,
+        queued: queue.items.length,
+      });
     }
   } catch (e) {
     if (e.name === "GeminiDead") {
@@ -191,7 +194,7 @@ async function runConsumerLoop() {
   }
 }
 
-function handleChunkedResponse(rawText, apiMs) {
+function handleChunkedResponse(rawText, timing) {
   const { settings, deliveredHistory } = state;
   const text = stripDecorations(rawText);
   if (!text) return; // Gemini decided there's no speech — silent skip
@@ -241,7 +244,11 @@ function handleChunkedResponse(rawText, apiMs) {
   }
 
   console.log(
-    `💬 subtitle: "${(mainLine || ja || "").slice(0, 40)}" [api ${(apiMs / 1000).toFixed(1)}s]`
+    `💬 subtitle: "${(mainLine || ja || "").slice(0, 40)}" ` +
+      `[api ${(timing.fetchMs / 1000).toFixed(1)}s` +
+      (timing.waitMs > 100 ? `, ratelimit +${(timing.waitMs / 1000).toFixed(1)}s` : "") +
+      (timing.queued ? `, ${timing.queued} queued` : "") +
+      `]`
   );
   sendToSw("subtitle", { ja, en, ts: Date.now() });
 }
