@@ -88,12 +88,14 @@ class GeminiClient {
     // remember what the model accepted.
     const generationConfig = { temperature: 0 };
     if (this.thinkingMode === undefined) {
-      // Lite models don't think by default, and a thinking config could only
-      // turn it ON — send nothing. Others walk the ladder below; note
-      // Gemini 3 non-lite Flash can NOT fully disable thinking ("low" is the
-      // floor and still costs seconds — measured 12-30s/chunk on
-      // gemini-3.7-flash), which is why lite is the recommended model here.
-      this.thinkingMode = /lite/i.test(this.model) ? "none" : "minimal";
+      // Walk the ladder for every model, lite included: explicitly asking
+      // for minimal thinking can only reduce it, and a lite model that
+      // ships with dynamic thinking on would otherwise silently cost
+      // seconds per call. Note Gemini 3 non-lite Flash can NOT fully
+      // disable thinking ("low" is its floor — measured 12-30s/chunk on
+      // gemini-3.7-flash); the concurrency in the consumer loop absorbs
+      // that as delay instead of dropped audio.
+      this.thinkingMode = "minimal";
     }
     if (this.thinkingMode === "minimal") {
       generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
