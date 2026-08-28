@@ -84,6 +84,9 @@ class GeminiClient {
     }
 
     const fetchStart = performance.now();
+    // A hung request must not stall the pipeline silently — abort hard.
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 30000);
     let response;
     try {
       response = await fetch(
@@ -105,10 +108,15 @@ class GeminiClient {
             ],
             generationConfig,
           }),
+          signal: abort.signal,
         }
       );
     } catch (e) {
-      return this._strike(`Network error: ${e.message}`);
+      return this._strike(
+        e.name === "AbortError" ? "Request timed out after 30s" : `Network error: ${e.message}`
+      );
+    } finally {
+      clearTimeout(abortTimer);
     }
     this.lastFetchMs = performance.now() - fetchStart;
 

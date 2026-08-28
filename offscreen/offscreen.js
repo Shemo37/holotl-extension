@@ -173,6 +173,7 @@ async function runConsumerLoop() {
       if (item === null) return; // queue closed — session over
 
       const wavBase64 = encodeWavBase64(item.samples);
+      console.log(`📤 sending ${item.durationS.toFixed(1)}s chunk (${queue.items.length} queued behind)`);
       const text = await client.transcribeChunk(wavBase64, item.durationS);
       if (text === null) continue; // cooldown or transient failure: chunk dropped
       handleChunkedResponse(text, {
