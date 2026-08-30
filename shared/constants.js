@@ -86,7 +86,10 @@ HOLOTL.clampSettings = function (s) {
     volumeThreshold: num(s.volumeThreshold, d.volumeThreshold, 0, 0.02),
     silenceTimeoutS: num(s.silenceTimeoutS, d.silenceTimeoutS, 0.3, 2.0),
     maxChunkS: num(s.maxChunkS, d.maxChunkS, 3, 15),
-    minSpeechS: num(s.minSpeechS, d.minSpeechS, 0.1, 1.0),
+    // Above ~1.5s this becomes a real filter: chunks carry ~0.3s preroll +
+    // the silence tail as padding, so e.g. 2.0 skips utterances shorter than
+    // roughly 1s of actual speech (single words, "うん", short interjections).
+    minSpeechS: num(s.minSpeechS, d.minSpeechS, 0.1, 3.0),
     fontSizePx: Math.round(num(s.fontSizePx, d.fontSizePx, 12, 48)),
     autoHideS: Math.round(num(s.autoHideS, d.autoHideS, 2, 30)),
     outputMode: ["translate", "transcribe", "both"].includes(s.outputMode)
