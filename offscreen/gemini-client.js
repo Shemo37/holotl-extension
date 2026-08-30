@@ -62,7 +62,12 @@ class GeminiClient {
   // advances the ladder (see transcribeChunk) and the result is remembered.
   _buildGenerationConfig() {
     const generationConfig = { temperature: 0 };
-    if (this.thinkingMode === undefined) this.thinkingMode = "minimal";
+    // Start at "low", not "minimal": every model tested (gemini-3.7-flash,
+    // gemini-3.5-flash-lite) rejects MINIMAL with a 400, which wastes a
+    // request per session and lands a scary-looking entry in
+    // chrome://extensions' error collector. Models that would accept
+    // minimal (3.6-flash per docs) simply run at low instead.
+    if (this.thinkingMode === undefined) this.thinkingMode = "level";
     if (this.thinkingMode === "minimal") {
       generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
     } else if (this.thinkingMode === "level") {
