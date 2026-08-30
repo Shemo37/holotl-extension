@@ -52,6 +52,62 @@ class GeminiClient {
     return Date.now() < this.cooldownUntil;
   }
 
+  // Thinking burns seconds per call and adds nothing to transcription or
+  // translation. Walk the ladder for every model, lite included: explicitly
+  // asking for minimal thinking can only reduce it. Gemini 3 models take
+  // thinkingLevel (non-lite Flash can NOT fully disable thinking — "low" is
+  // its floor, measured 12-30s/chunk on gemini-3.7-flash; the concurrent
+  // consumer loop absorbs that as delay instead of dropped audio); 2.5-era
+  // models take thinkingBudget and ignore thinkingLevel-style config. A 400
+  // advances the ladder (see transcribeChunk) and the result is remembered.
+  _buildGenerationConfig() {
+    const generationConfig = { temperature: 0 };
+    if (this.thinkingMode === undefined) this.thinkingMode = "minimal";
+    if (this.thinkingMode === "minimal") {
+      generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
+    } else if (this.thinkingMode === "level") {
+      generationConfig.thinkingConfig = { thinkingLevel: "low" };
+    } else if (this.thinkingMode === "budget") {
+      generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
+    return generationConfig;
+  }
+
+  /**
+   * Text-only JA→EN repair call, used when a chunk response contained
+   * Japanese but no English. Small, occasional, and quality-of-life — it
+   * skips the rate limiter and never strikes the session; failures just
+   * leave the subtitle Japanese-only. Cost is metered like any request.
+   */
+  async translateText(jaText) {
+    try {
+      const response = await fetch(
+        GEMINI_BASE + encodeURIComponent(this.model) + ":generateContent",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: HOLOTL.PROMPTS.textTranslate + "\n\n" + jaText }] }],
+            generationConfig: this._buildGenerationConfig(),
+          }),
+        }
+      );
+      if (!response.ok) {
+        console.warn("🩹 EN repair call failed: HTTP", response.status);
+        return null;
+      }
+      const body = await response.json();
+      const text =
+        body?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") ?? "";
+      if (!text) return null;
+      this._accountCost(body.usageMetadata, 0, text);
+      return text;
+    } catch (e) {
+      console.warn("🩹 EN repair call failed:", e.message);
+      return null;
+    }
+  }
+
   // Serializes request *spacing* while allowing overlapping flight — with
   // concurrent callers, each acquires the next dispatch slot in turn.
   async rateLimit() {
@@ -82,28 +138,7 @@ class GeminiClient {
     await this.rateLimit();
     const waitMs = performance.now() - callStart;
 
-    // Thinking burns seconds per chunk and adds nothing to transcription.
-    // Gemini 3 models take thinkingLevel; 2.5-era models take thinkingBudget
-    // and IGNORE thinkingLevel-style config. Walk the ladder once and
-    // remember what the model accepted.
-    const generationConfig = { temperature: 0 };
-    if (this.thinkingMode === undefined) {
-      // Walk the ladder for every model, lite included: explicitly asking
-      // for minimal thinking can only reduce it, and a lite model that
-      // ships with dynamic thinking on would otherwise silently cost
-      // seconds per call. Note Gemini 3 non-lite Flash can NOT fully
-      // disable thinking ("low" is its floor — measured 12-30s/chunk on
-      // gemini-3.7-flash); the concurrency in the consumer loop absorbs
-      // that as delay instead of dropped audio.
-      this.thinkingMode = "minimal";
-    }
-    if (this.thinkingMode === "minimal") {
-      generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
-    } else if (this.thinkingMode === "level") {
-      generationConfig.thinkingConfig = { thinkingLevel: "low" };
-    } else if (this.thinkingMode === "budget") {
-      generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    }
+    const generationConfig = this._buildGenerationConfig();
 
     const fetchStart = performance.now();
     // A hung request must not stall the pipeline silently — abort hard.

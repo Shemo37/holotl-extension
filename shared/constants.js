@@ -35,8 +35,14 @@ HOLOTL.PROMPTS = {
   both:
     "This audio is live Japanese speech from a stream. Output exactly two " +
     "lines with no preamble, labels, or quotes: line 1 is the verbatim " +
-    "Japanese transcription, line 2 is the natural English translation. If " +
-    "the audio contains no speech, output nothing at all.",
+    "Japanese transcription, line 2 is the natural English translation. " +
+    "Never omit the English line — always output both. If the audio " +
+    "contains no speech, output nothing at all.",
+  // Text-only repair call, used when a response contains Japanese but no
+  // English (the model skipped the translation line).
+  textTranslate:
+    "Translate this Japanese line from a live stream into natural English. " +
+    "Output ONLY the English translation, with no preamble, labels, or quotes.",
   rosterSuffix: (roster) =>
     " Names that may be spoken or mentioned include: " + roster + ".",
 };

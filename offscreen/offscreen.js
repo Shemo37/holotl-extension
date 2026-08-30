@@ -178,12 +178,19 @@ async function runConsumerLoop() {
   let nextToDeliver = 0;
   let dead = null;
 
+  // handleChunkedResponse can await an EN-repair call — chain deliveries so
+  // subtitles still render strictly in chunk order.
+  let deliverChain = Promise.resolve();
   const deliverReady = () => {
     while (results.has(nextToDeliver)) {
       const r = results.get(nextToDeliver);
       results.delete(nextToDeliver);
       nextToDeliver++;
-      if (r !== null && state) handleChunkedResponse(r.text, r.timing);
+      if (r !== null) {
+        deliverChain = deliverChain
+          .then(() => (state ? handleChunkedResponse(r.text, r.timing) : null))
+          .catch((e) => console.error("🔴 Subtitle delivery error:", e));
+      }
     }
   };
 
@@ -237,8 +244,9 @@ async function runConsumerLoop() {
   deliverReady();
 }
 
-function handleChunkedResponse(rawText, timing) {
+async function handleChunkedResponse(rawText, timing) {
   const { settings, deliveredHistory } = state;
+  const hasJapanese = (s) => /[぀-ヿ一-鿿]/.test(s);
   const timingStr =
     `[api ${(timing.fetchMs / 1000).toFixed(1)}s` +
     (timing.waitMs > 100 ? `, ratelimit +${(timing.waitMs / 1000).toFixed(1)}s` : "") +
@@ -257,7 +265,6 @@ function handleChunkedResponse(rawText, timing) {
 
   if (settings.outputMode === "both") {
     const lines = text.split("\n").map((l) => stripDecorations(l)).filter(Boolean);
-    const hasJapanese = (s) => /[぀-ヿ一-鿿]/.test(s);
     if (lines.length >= 2) {
       ja = lines[0];
       en = lines.slice(1).join(" ");
@@ -268,7 +275,10 @@ function handleChunkedResponse(rawText, timing) {
   } else if (settings.outputMode === "transcribe") {
     ja = text;
   } else {
-    en = text;
+    // translate mode — but the model occasionally answers in Japanese
+    // (untranslated); treat that as a transcription needing repair.
+    if (hasJapanese(text)) ja = text;
+    else en = text;
   }
 
   if (ja) {
@@ -286,6 +296,25 @@ function handleChunkedResponse(rawText, timing) {
   // In transcribe mode the JA line is the main line — dedup it vs history.
   if (settings.outputMode === "transcribe" && ja) {
     if (isHallucination(ja, deliveredHistory)) ja = null;
+  }
+
+  // The model sometimes skips the English line (both mode) or answers in
+  // Japanese (translate mode) — repair with a quick text-only translation.
+  if (settings.outputMode !== "transcribe" && ja && !en) {
+    const repaired = await state.client.translateText(ja);
+    if (!state) return; // stopped while repairing
+    if (repaired) {
+      let t = stripDecorations(repaired);
+      t = trimDegenerateTail(t);
+      if (t) t = postProcessTranslation(t);
+      if (t && !isHallucination(t, deliveredHistory)) {
+        en = t;
+        console.log("🩹 EN repaired via text call");
+      }
+    }
+    // translate mode shows English only — keep JA visible just as the
+    // fallback when repair failed.
+    if (settings.outputMode === "translate" && en) ja = null;
   }
 
   if (!ja && !en) {
