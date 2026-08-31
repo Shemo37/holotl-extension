@@ -9,6 +9,14 @@
 // single server message (bad key, bad model id) stop the client with an
 // "error" status instead of hammering the endpoint every 500 ms.
 
+// Window display for the transcription streams: everything a speech window
+// produces accumulates hidden, and the window's FULL Japanese + FULL
+// translation appear together as one subtitle at the turn boundary
+// (turnComplete/generationComplete from the server, or flushTurn() when
+// the next VAD window opens). No mid-window fragments, no word-by-word
+// growth, nothing discarded.
+const PHRASE_MAX_CHARS = 120;
+
 export class GeminiLiveClient {
   /**
    * @param {object} opts
@@ -17,6 +25,9 @@ export class GeminiLiveClient {
    * @param {string} opts.wsUrlBase        wss://…/BidiGenerateContent
    * @param {string} opts.systemInstruction
    * @param {object} opts.setupOverrides   merged last into the setup object
+   * @param {boolean} [opts.manualActivity] client-side VAD marks utterance
+   *   boundaries: setup disables the server's automatic activity detection
+   *   and startActivity()/endActivity() bracket each streamed speech window
    * @param {number} opts.reconnectDelayMs
    * @param {number} opts.maxConsecutiveFailures
    * @param {boolean} opts.debug
@@ -30,6 +41,7 @@ export class GeminiLiveClient {
     this.wsUrlBase = opts.wsUrlBase;
     this.systemInstruction = opts.systemInstruction;
     this.setupOverrides = opts.setupOverrides || {};
+    this.manualActivity = !!opts.manualActivity;
     this.reconnectDelayMs = opts.reconnectDelayMs ?? 500;
     this.maxConsecutiveFailures = opts.maxConsecutiveFailures ?? 10;
     this.debug = !!opts.debug;
@@ -44,15 +56,28 @@ export class GeminiLiveClient {
     this._sessionSawMessage = false;
     this._loggedFirstFrame = false;
 
-    // Subtitle assembly state (per model turn).
+    // Subtitle assembly state (per model turn). Input (JA speech) and
+    // output (the model's translation) transcription events are separate
+    // streams and must never share a line — merging them interleaves
+    // Japanese with the translation on screen. Each stream accumulates its
+    // window's text hidden (phrase) until the turn boundary shows it
+    // (shown).
     this._turnText = "";
-    this._transcriptLine = "";
-    this._interimText = "";
+    this._input = { phrase: "", shown: "" };
+    this._output = { phrase: "", shown: "" };
+    this._lastSub = { jp: "", en: "" };
   }
 
   connect() {
     if (this.intentionalClose) return;
     this._sessionSawMessage = false;
+    // A session that dies mid-utterance never sends turnComplete; without
+    // this reset its partial lines would prepend to the next session's
+    // first subtitle.
+    this._turnText = "";
+    this._input = { phrase: "", shown: "" };
+    this._output = { phrase: "", shown: "" };
+    this._lastSub = { jp: "", en: "" };
     this.onStatusChange(
       this.consecutiveFailures > 0 ? "reconnecting" : "connecting"
     );
@@ -67,6 +92,9 @@ export class GeminiLiveClient {
       const setup = {
         model: this.model,
         systemInstruction: { parts: [{ text: this.systemInstruction }] },
+        ...(this.manualActivity
+          ? { realtimeInputConfig: { automaticActivityDetection: { disabled: true } } }
+          : {}),
         ...this.setupOverrides,
       };
       ws.send(JSON.stringify({ setup }));
@@ -92,6 +120,18 @@ export class GeminiLiveClient {
       }
       if (!this._sessionSawMessage) {
         this.consecutiveFailures++;
+        // A preview model may reject the manual-activity setup field and
+        // close before sending anything. Rather than burning through the
+        // whole failure budget, drop the field and let the server's own
+        // VAD segment turns; client-side VAD still gates what is sent.
+        if (this.manualActivity && this.consecutiveFailures >= 2) {
+          this.manualActivity = false;
+          const line =
+            "2 sessions died before any server message — retrying WITHOUT " +
+            "manual activity detection (server VAD takes over turn-taking)";
+          console.warn(`[HoloTL Live] ${line}`);
+          this.onDebug(line);
+        }
       }
       const closeLine =
         `session closed (code ${event.code}` +
@@ -118,9 +158,9 @@ export class GeminiLiveClient {
     };
   }
 
-  /** Send one base64-encoded 16 kHz PCM16 chunk. */
+  /** Send one base64-encoded 16 kHz PCM16 chunk. Returns true if sent. */
   sendAudioChunk(base64) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     this.ws.send(
       JSON.stringify({
         realtimeInput: {
@@ -128,6 +168,26 @@ export class GeminiLiveClient {
         },
       })
     );
+    return true;
+  }
+
+  /** Open a speech window: with manual activity detection the server is
+   * told a turn's audio is starting; audio then streams via sendAudioChunk
+   * while the speaker talks, and endActivity() finalizes the turn. No-ops
+   * (returns false) when disconnected or manual activity is off. */
+  startActivity() {
+    if (!this.manualActivity) return false;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+    return true;
+  }
+
+  /** Close the current speech window (see startActivity). */
+  endActivity() {
+    if (!this.manualActivity) return false;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+    return true;
   }
 
   disconnect() {
@@ -189,45 +249,87 @@ export class GeminiLiveClient {
     }
 
     // Transcription-shaped fallbacks (camelCase wire format; used by the
-    // dedicated transcribe model): interim frames replace, finals append.
-    const interim = sc.interimInputTranscription ?? sc.interimTranscription;
-    if (typeof interim?.text === "string") {
-      this._interimText = interim.text;
+    // transcribe/translate Live models): inputTranscription is the JA
+    // speech, outputTranscription is the model's translation — they feed
+    // the two separate subtitle lines. Interim frames are ignored: chunk
+    // display renders only completed phrases, never streaming partials.
+    if (typeof sc.inputTranscription?.text === "string" && sc.inputTranscription.text) {
+      this._appendPhrase(this._input, sc.inputTranscription.text);
       updated = true;
     }
-    const finals = [sc.inputTranscription, sc.outputTranscription];
-    for (const t of finals) {
-      if (typeof t?.text === "string" && t.text) {
-        this._transcriptLine = this._appendTranscript(
-          this._transcriptLine,
-          t.text
-        );
-        this._interimText = "";
-        updated = true;
+    if (typeof sc.outputTranscription?.text === "string" && sc.outputTranscription.text) {
+      this._appendPhrase(this._output, sc.outputTranscription.text);
+      updated = true;
+    }
+
+    if (updated) {
+      const sub = this._composeSubtitle();
+      // Emit only visible changes: hidden accumulation must not blank or
+      // re-trigger the overlay.
+      if (sub.jp !== this._lastSub.jp || sub.en !== this._lastSub.en) {
+        this._lastSub = sub;
+        this.onSubtitleUpdate(sub);
       }
     }
 
-    if (updated) this.onSubtitleUpdate(this._composeSubtitle());
-
-    if (sc.turnComplete) {
-      this._turnText = "";
-      this._transcriptLine = "";
-      this._interimText = "";
+    // Some Live models mark the end of a turn with generationComplete
+    // instead of turnComplete; either way, the window's JP+translation pair
+    // is done — show it together and start the next window clean.
+    if (sc.turnComplete || sc.generationComplete) {
+      this._finishTurn();
     }
   }
 
-  _appendTranscript(line, text) {
-    line = line ? line + text : text;
-    // Keep the visible line bounded; the overlay is one line of context.
-    const MAX = 120;
-    return line.length > MAX ? line.slice(line.length - MAX) : line;
+  /** End-of-turn: flush both pending lines as one paired update, then
+   * reset all assembly state so the next utterance starts clean. Also
+   * called by the capture pipeline when a new VAD speech window opens, for
+   * models that never send a turn marker — without this, JP and the
+   * translation accumulate across windows and drift out of sync. */
+  flushTurn() {
+    this._finishTurn();
+  }
+
+  _finishTurn() {
+    let flushed = false;
+    for (const state of [this._input, this._output]) {
+      if (state.phrase) {
+        state.shown = state.phrase;
+        state.phrase = "";
+        flushed = true;
+      }
+    }
+    if (flushed) {
+      const sub = this._composeSubtitle();
+      if (sub.jp !== this._lastSub.jp || sub.en !== this._lastSub.en) {
+        this.onSubtitleUpdate(sub);
+      }
+    }
+    this._turnText = "";
+    this._input = { phrase: "", shown: "" };
+    this._output = { phrase: "", shown: "" };
+    // Next turn may legitimately repeat the same phrase; let it re-emit.
+    this._lastSub = { jp: "", en: "" };
+  }
+
+  _appendPhrase(state, text) {
+    state.phrase = state.phrase
+      ? state.phrase + text
+      : text.replace(/^\s+/, "");
+    // Keep the window's line bounded (windows are ≤3.5s so this rarely
+    // trips); a truncated line gets a leading ellipsis so it doesn't read
+    // as a sentence that starts mid-word.
+    if (state.phrase.length > PHRASE_MAX_CHARS) {
+      state.phrase =
+        "…" + state.phrase.slice(state.phrase.length - PHRASE_MAX_CHARS);
+    }
   }
 
   // Parse the accumulated turn text for JP:/EN:/TH: prefixed lines. The
   // translation lands in `en` whichever target language it is (the overlay
   // has one translation slot). Unprefixed text counts as JP so a model that
-  // ignores the instruction still renders. Transcription events fill JP
-  // when the model turn carried none.
+  // ignores the instruction still renders. Transcription events fill the
+  // lines the model turn didn't: input transcription → JP, output
+  // transcription (the translation) → the translation slot.
   _composeSubtitle() {
     let jp = "";
     let en = "";
@@ -244,7 +346,10 @@ export class GeminiLiveClient {
       }
     }
     if (!jp) {
-      jp = this._transcriptLine + this._interimText;
+      jp = this._input.shown;
+    }
+    if (!en) {
+      en = this._output.shown;
     }
     return { jp, en };
   }
