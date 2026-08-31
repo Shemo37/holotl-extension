@@ -6,8 +6,6 @@
   if (window.__holotlLiveOverlay) return;
   window.__holotlLiveOverlay = true;
 
-  const CLEAR_AFTER_MS = 4000;
-
   const box = document.createElement("div");
   box.id = "holotl-overlay-box";
 
@@ -71,17 +69,42 @@
     }
   });
 
-  let clearTimer = null;
+  // No auto-clear: the last subtitle stays on screen until the next one
+  // replaces it. A minimum display time keeps rapid bursts of short
+  // utterances from flickering by — a new subtitle arriving early waits
+  // out the hold (newest wins if several queue up).
+  const MIN_DISPLAY_MS = 1500;
+  let shownAt = 0;
+  let pendingSub = null;
+  let pendingTimer = null;
 
-  function showSubtitles(jp, en) {
+  function renderSubtitles(jp, en) {
     jpEl.textContent = jp || "";
     enEl.textContent = en || "";
     msgEl.textContent = "";
-    clearTimeout(clearTimer);
-    clearTimer = setTimeout(() => {
-      jpEl.textContent = "";
-      enEl.textContent = "";
-    }, CLEAR_AFTER_MS);
+    shownAt = Date.now();
+  }
+
+  function showSubtitles(jp, en) {
+    const heldFor = Date.now() - shownAt;
+    const somethingShown = jpEl.textContent || enEl.textContent;
+    if (!somethingShown || heldFor >= MIN_DISPLAY_MS) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+      pendingSub = null;
+      renderSubtitles(jp, en);
+      return;
+    }
+    pendingSub = { jp, en };
+    if (!pendingTimer) {
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        if (pendingSub) {
+          renderSubtitles(pendingSub.jp, pendingSub.en);
+          pendingSub = null;
+        }
+      }, MIN_DISPLAY_MS - heldFor);
+    }
   }
 
   function showStatus(status, message) {
@@ -116,10 +139,12 @@
       Math.max(0, e.clientY - drag.dy),
       window.innerHeight - box.offsetHeight
     );
-    box.style.left = `${x}px`;
+    // Anchor by the box CENTER, not the left edge: content width changes
+    // then expand symmetrically instead of pushing the box left/right.
+    box.style.left = `${x + box.offsetWidth / 2}px`;
     box.style.top = `${y}px`;
     box.style.bottom = "auto";
-    box.style.transform = "none";
+    box.style.transform = "translateX(-50%)";
   });
   box.addEventListener("pointerup", (e) => {
     drag = null;
