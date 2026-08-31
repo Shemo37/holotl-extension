@@ -19,6 +19,23 @@ tab audio ─tabCapture─▶ offscreen document
                └─▶ "JP: …" / "EN: …" (or "TH: …") lines ─▶ overlay
 ```
 
+## Repo layout
+
+- `manifest.json` — MV3, module service worker, on-demand injection (no
+  static content scripts).
+- `config.js` — **every knob lives here**: model id, WS endpoint, system
+  instructions per language, price, silence gate, reconnect policy,
+  appearance defaults, DEBUG flags.
+- `background.js` — start/stop orchestration, offscreen-document lifecycle,
+  message relay to the tab, debug-log persistence.
+- `offscreen/offscreen.js` — audio pipeline, silence gate, cost meter.
+- `offscreen/gemini-client.js` — **all Live wire-schema knowledge** (setup,
+  audio frames, response parsing, reconnect).
+- `offscreen/pcm-worklet.js` — 16 kHz Float32→PCM16 chunker with RMS.
+- `content/overlay.js` + `content/overlay.css` — the injected subtitle
+  overlay.
+- `popup.html` / `popup.js` — controls plus the Appearance and Debug tabs.
+
 ## Install
 
 1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
@@ -27,6 +44,10 @@ tab audio ─tabCapture─▶ offscreen document
 3. Click the toolbar icon → paste the key → **Save**. The key lives only in
    `chrome.storage.local`. **Never commit it, and never publish a build of
    this extension with a key embedded — anyone could extract and bill it.**
+
+All settings live in `chrome.storage.local` under `apiKey`, `targetLang`,
+`silenceGate`, `appearance`, and `totalUsd` (all-time spend) — removing the
+extension clears all of them, key included.
 
 ## Use
 
@@ -59,8 +80,11 @@ One constant in `config.js`:
 export const LIVE_MODEL = "models/gemini-3.5-live-translate-preview";
 ```
 
-`gemini-2.0-flash` is the tested alternate. Any general Live model that
-follows the system instruction produces both lines. If you swap in the
+`gemini-2.0-flash` is the documented alternate. Any general Live model that
+follows the system instruction produces both lines. The default is a
+preview model whose exact wire schema hasn't been exercised against the
+real API yet — the first real run tells you (the Debug tab shows the first
+server frame; see Troubleshooting). If you swap in the
 dedicated `models/gemini-3.5-transcribe-live` instead, know its quirks
 (learned the hard way in this repo's earlier Live experiments):
 
@@ -105,6 +129,29 @@ offscreen document → Inspect) — paste that log and the fix is usually a
 one-liner in `gemini-client.js` or `config.js`. The wire format is
 camelCase. `DEBUG_FAKE_SUBTITLES = true` runs the whole UI pipeline with
 canned subtitles and no API key/capture (for smoke tests only).
+
+## Troubleshooting
+
+Open the popup's **Debug tab** first — it answers most of these.
+
+- **No subtitles, dot stays green** — check the log: if frames are arriving
+  but nothing renders, the response shape changed; grab the first-frame log
+  line and adjust the parser in `offscreen/gemini-client.js`. If the log is
+  quiet, the tab may be silent or the silence gate threshold too high
+  (toggle the gate off to test).
+- **Red dot / "Connection failed 10 times"** — bad API key, a model id the
+  Live endpoint doesn't serve, or no Live API quota. The log shows the
+  close code/reason from the server; fix the key or `LIVE_MODEL`, then
+  Start again.
+- **Cost ticks but no overlay** — you started on a restricted page
+  (`chrome://`, Web Store) where the overlay can't render, or the tab
+  navigated after Start (Stop, then Start again to re-inject).
+- **Second line empty, JP fine** — the model is ignoring the translation
+  instruction (the dedicated transcribe model always does; see Model).
+- **Tab went silent** — the capture ended abnormally (e.g. the offscreen
+  document crashed); Stop, reload the tab, Start again.
+- **Amber dot every ~15 minutes** — normal; that's the Live session limit
+  rollover (see above).
 
 ## Limitations
 
