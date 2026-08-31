@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <style>
       body {
-        width: 300px;
+        width: 320px;
         margin: 0;
         padding: 14px;
         font-family: system-ui, sans-serif;
@@ -78,10 +78,6 @@
       #status.error {
         color: #f87171;
       }
-      #cost {
-        margin-top: 4px;
-        color: #a3a3b2;
-      }
       .buttons {
         display: flex;
         gap: 8px;
@@ -90,6 +86,99 @@
       #key-saved {
         color: #4ade80;
         font-size: 12px;
+      }
+
+      /* tabs */
+      .tabbar {
+        display: flex;
+        gap: 4px;
+        margin-top: 14px;
+        border-bottom: 1px solid #33333f;
+      }
+      .tabbar button {
+        flex: 1;
+        background: transparent;
+        color: #a3a3b2;
+        border-radius: 6px 6px 0 0;
+        font-weight: 600;
+        padding: 7px 0;
+      }
+      .tabbar button.active {
+        background: #1e1e26;
+        color: #e6e6ec;
+      }
+      .tabpanel {
+        background: #1e1e26;
+        border-radius: 0 0 8px 8px;
+        padding: 10px 12px 12px;
+      }
+      .tabpanel[hidden] {
+        display: none;
+      }
+
+      /* appearance controls */
+      .ctl {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        color: #a3a3b2;
+      }
+      .ctl input[type="range"] {
+        width: 130px;
+        accent-color: #4ade80;
+      }
+      .ctl input[type="color"] {
+        width: 36px;
+        height: 24px;
+        padding: 0;
+        border: 1px solid #33333f;
+        border-radius: 5px;
+        background: transparent;
+        cursor: pointer;
+      }
+      .ctl .val {
+        color: #e6e6ec;
+        font-variant-numeric: tabular-nums;
+        min-width: 34px;
+        text-align: right;
+        display: inline-block;
+      }
+      #reset-appearance {
+        margin-top: 12px;
+        background: #3b3b4a;
+        width: 100%;
+      }
+
+      /* debug tab */
+      #cost {
+        color: #e6e6ec;
+        margin-bottom: 2px;
+      }
+      #cost-detail {
+        color: #a3a3b2;
+        font-size: 12px;
+      }
+      #debug-log {
+        margin-top: 10px;
+        max-height: 160px;
+        overflow-y: auto;
+        background: #14141a;
+        border: 1px solid #33333f;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #a3a3b2;
+      }
+      #clear-log {
+        margin-top: 8px;
+        background: #3b3b4a;
+        width: 100%;
       }
     </style>
   </head>
@@ -120,7 +209,46 @@
     </div>
 
     <div id="status"></div>
-    <div id="cost">this session $0.000 / total $0.000</div>
+
+    <div class="tabbar">
+      <button id="tab-btn-appearance" class="active">Appearance</button>
+      <button id="tab-btn-debug">Debug</button>
+    </div>
+
+    <div id="tab-appearance" class="tabpanel">
+      <div class="ctl">
+        <span>Font size <span class="val" id="font-size-val"></span></span>
+        <input id="font-size" type="range" min="12" max="48" step="1" />
+      </div>
+      <div class="ctl">
+        <span>JP text color</span>
+        <input id="jp-color" type="color" />
+      </div>
+      <div class="ctl">
+        <span>Translation color</span>
+        <input id="en-color" type="color" />
+      </div>
+      <div class="ctl">
+        <span>Text border <span class="val" id="outline-width-val"></span></span>
+        <input id="outline-width" type="range" min="0" max="4" step="1" />
+      </div>
+      <div class="ctl">
+        <span>Text border color</span>
+        <input id="outline-color" type="color" />
+      </div>
+      <div class="ctl">
+        <span>Background opacity <span class="val" id="bg-opacity-val"></span></span>
+        <input id="bg-opacity" type="range" min="0" max="100" step="5" />
+      </div>
+      <button id="reset-appearance">Reset to defaults</button>
+    </div>
+
+    <div id="tab-debug" class="tabpanel" hidden>
+      <div id="cost">this session $0.000 / total $0.000</div>
+      <div id="cost-detail"></div>
+      <div id="debug-log">(no events yet)</div>
+      <button id="clear-log">Clear log</button>
+    </div>
 
     <script type="module" src="popup.js"></script>
   </body>

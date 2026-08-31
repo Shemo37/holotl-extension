@@ -28,6 +28,49 @@
   box.append(statusDot, jpEl, enEl, msgEl);
   (document.body || document.documentElement).appendChild(box);
 
+  // Keep in sync with DEFAULT_APPEARANCE in config.js (this plain script
+  // can't import the module).
+  const APPEARANCE_DEFAULTS = {
+    fontSizePx: 24,
+    jpColor: "#ffffff",
+    enColor: "#d3e6ff",
+    outlineWidthPx: 2,
+    outlineColor: "#000000",
+    bgOpacity: 82,
+  };
+
+  function outlineShadow(width, color) {
+    if (!width) return "0 1px 3px rgba(0, 0, 0, 0.8)";
+    const shadows = [];
+    for (let dx = -width; dx <= width; dx++) {
+      for (let dy = -width; dy <= width; dy++) {
+        if (dx || dy) shadows.push(`${dx}px ${dy}px 0 ${color}`);
+      }
+    }
+    return shadows.join(",");
+  }
+
+  function applyAppearance(a) {
+    const ap = { ...APPEARANCE_DEFAULTS, ...(a || {}) };
+    jpEl.style.fontSize = `${ap.fontSizePx}px`;
+    enEl.style.fontSize = `${Math.round(ap.fontSizePx * 0.8)}px`;
+    jpEl.style.color = ap.jpColor;
+    enEl.style.color = ap.enColor;
+    const shadow = outlineShadow(ap.outlineWidthPx, ap.outlineColor);
+    jpEl.style.textShadow = shadow;
+    enEl.style.textShadow = shadow;
+    box.style.background = `rgba(10, 10, 14, ${ap.bgOpacity / 100})`;
+  }
+
+  chrome.storage.local.get("appearance").then(({ appearance }) => {
+    applyAppearance(appearance);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.appearance) {
+      applyAppearance(changes.appearance.newValue);
+    }
+  });
+
   let clearTimer = null;
 
   function showSubtitles(jp, en) {

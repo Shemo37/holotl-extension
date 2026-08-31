@@ -1,7 +1,8 @@
-// Popup: API key storage, start/stop, target language, silence gate, and
-// the live status/cost readout (offscreen broadcasts reach us directly).
+// Popup: API key storage, start/stop, target language, silence gate, plus
+// two tabs — Appearance (live-applied overlay styling) and Debug (cost
+// meter + rolling event log). Offscreen broadcasts reach us directly.
 
-import { DEFAULT_TARGET_LANG } from "./config.js";
+import { DEFAULT_TARGET_LANG, DEFAULT_APPEARANCE } from "./config.js";
 
 const $ = (id) => document.getElementById(id);
 const keyInput = $("api-key");
@@ -12,6 +13,19 @@ const startBtn = $("start");
 const stopBtn = $("stop");
 const statusEl = $("status");
 const costEl = $("cost");
+const costDetailEl = $("cost-detail");
+const logEl = $("debug-log");
+
+// Appearance controls: element id → appearance key.
+const APPEARANCE_CONTROLS = {
+  "font-size": "fontSizePx",
+  "jp-color": "jpColor",
+  "en-color": "enColor",
+  "outline-width": "outlineWidthPx",
+  "outline-color": "outlineColor",
+  "bg-opacity": "bgOpacity",
+};
+let appearance = { ...DEFAULT_APPEARANCE };
 
 init();
 
@@ -21,11 +35,13 @@ async function init() {
     silenceGate = true,
     targetLang = DEFAULT_TARGET_LANG,
     totalUsd = 0,
+    appearance: storedAppearance,
   } = await chrome.storage.local.get([
     "apiKey",
     "silenceGate",
     "targetLang",
     "totalUsd",
+    "appearance",
   ]);
   if (apiKey) {
     keyInput.value = apiKey;
@@ -35,9 +51,32 @@ async function init() {
   langSelect.value = targetLang;
   renderCost(0, totalUsd);
 
+  appearance = { ...DEFAULT_APPEARANCE, ...(storedAppearance || {}) };
+  renderAppearanceControls();
+
+  const { debugLog = [] } = await chrome.storage.session.get("debugLog");
+  renderLog(debugLog);
+
   const state = await chrome.runtime.sendMessage({ action: "GET_STATE" });
   setRunning(!!state?.running);
 }
+
+// ---- tabs ----
+
+const tabs = [
+  { btn: $("tab-btn-appearance"), panel: $("tab-appearance") },
+  { btn: $("tab-btn-debug"), panel: $("tab-debug") },
+];
+for (const tab of tabs) {
+  tab.btn.addEventListener("click", () => {
+    for (const t of tabs) {
+      t.btn.classList.toggle("active", t === tab);
+      t.panel.hidden = t !== tab;
+    }
+  });
+}
+
+// ---- main controls ----
 
 $("save-key").addEventListener("click", async () => {
   await chrome.storage.local.set({ apiKey: keyInput.value.trim() });
@@ -75,13 +114,70 @@ stopBtn.addEventListener("click", async () => {
   setStatus("stopped");
 });
 
+// ---- appearance tab ----
+
+function renderAppearanceControls() {
+  for (const [id, key] of Object.entries(APPEARANCE_CONTROLS)) {
+    $(id).value = appearance[key];
+  }
+  $("font-size-val").textContent = `${appearance.fontSizePx}px`;
+  $("outline-width-val").textContent = `${appearance.outlineWidthPx}px`;
+  $("bg-opacity-val").textContent = `${appearance.bgOpacity}%`;
+}
+
+for (const [id, key] of Object.entries(APPEARANCE_CONTROLS)) {
+  $(id).addEventListener("input", () => {
+    const el = $(id);
+    appearance[key] = el.type === "range" ? Number(el.value) : el.value;
+    renderAppearanceControls();
+    // The overlay watches storage.onChanged, so this applies live.
+    chrome.storage.local.set({ appearance });
+  });
+}
+
+$("reset-appearance").addEventListener("click", () => {
+  appearance = { ...DEFAULT_APPEARANCE };
+  renderAppearanceControls();
+  chrome.storage.local.set({ appearance });
+});
+
+// ---- debug tab ----
+
+$("clear-log").addEventListener("click", async () => {
+  await chrome.storage.session.set({ debugLog: [] });
+  renderLog([]);
+});
+
+function renderLog(lines) {
+  logEl.textContent = lines.length ? lines.join("\n") : "(no events yet)";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function appendLogLine(line) {
+  if (logEl.textContent === "(no events yet)") logEl.textContent = "";
+  logEl.textContent +=
+    (logEl.textContent ? "\n" : "") +
+    `${new Date().toLocaleTimeString()}  ${line}`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---- live updates from offscreen/background ----
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.action === "STATUS_UPDATE") {
     const { status, message } = msg.payload || {};
     setStatus(message ? `${status}: ${message}` : status, status);
+    appendLogLine(`status: ${status}${message ? ` — ${message}` : ""}`);
     if (status === "error" || status === "stopped") setRunning(false);
   } else if (msg?.action === "COST_UPDATE") {
-    renderCost(msg.payload?.sessionUsd, msg.payload?.totalUsd);
+    renderCost(
+      msg.payload?.sessionUsd,
+      msg.payload?.totalUsd,
+      msg.payload?.audioSeconds,
+      msg.payload?.wallSeconds
+    );
+  } else if (msg?.action === "DEBUG_LOG") {
+    appendLogLine(msg.payload?.line || "");
   }
 });
 
@@ -96,8 +192,12 @@ function setStatus(text, cls = "") {
   statusEl.className = cls === "connected" || cls === "error" ? cls : "";
 }
 
-function renderCost(sessionUsd = 0, totalUsd = 0) {
+function renderCost(sessionUsd = 0, totalUsd = 0, audioSeconds, wallSeconds) {
   costEl.textContent =
     `this session $${(sessionUsd || 0).toFixed(3)} / ` +
     `total $${(totalUsd || 0).toFixed(3)}`;
+  costDetailEl.textContent =
+    audioSeconds !== undefined
+      ? `${Math.round(audioSeconds)}s audio sent in ${wallSeconds ?? 0}s wall-clock`
+      : "";
 }

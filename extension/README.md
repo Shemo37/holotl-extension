@@ -33,6 +33,18 @@ tab audio ─tabCapture─▶ offscreen document
    beneath), with a status dot: green connected, amber (re)connecting, red
    error. Subtitles clear after 4 s of silence. **Stop** from the popup.
 
+The popup has two tabs:
+
+- **Appearance** — font size, JP/translation text colors, text border
+  (outline) width and color, and box background opacity. Every change
+  applies to the overlay instantly (stored in `chrome.storage.local`, the
+  overlay watches for changes), with a reset-to-defaults button.
+- **Debug** — the cost meter (session / all-time, plus audio-seconds sent
+  vs wall-clock) and a rolling event log: connection opens, close
+  codes/reasons, reconnects, status changes, and the first raw server frame.
+  The log survives popup close (session storage) and clears when the
+  browser closes or via the Clear button.
+
 Changing the translation language while running reconnects the Live session
 (~0.5 s gap) — the language lives in the session's system instruction.
 
@@ -63,8 +75,8 @@ and reducible:
 
 - the **silence gate** (popup toggle) stops sending audio after 1 s below an
   RMS threshold, so BGM lulls and dead air cost nothing;
-- the popup shows **this session / all-time** spend, computed from audio
-  seconds actually sent (persisted across sessions).
+- the popup's **Debug tab** shows **this session / all-time** spend,
+  computed from audio seconds actually sent (persisted across sessions).
 
 Verify the price against Google's current pricing and adjust
 `PRICE_PER_MIN` in `config.js`.
@@ -82,10 +94,11 @@ the amber dot blink and lose about a second of audio. Guards:
 
 ## Debugging schema drift
 
-Preview Live models change shape. Set `DEBUG = true` in `config.js` (default
-on) and the offscreen console (`chrome://extensions` → service worker /
-offscreen document → Inspect) logs the **first raw server frame verbatim**
-plus every close code/reason — paste that log and the fix is usually a
+Preview Live models change shape. The popup's **Debug tab** shows the
+first server frame (truncated) and every close code/reason without opening
+any console. For the full frame, `DEBUG = true` in `config.js` (default on)
+logs it verbatim in the offscreen console (`chrome://extensions` →
+offscreen document → Inspect) — paste that log and the fix is usually a
 one-liner in `gemini-client.js` or `config.js`. The wire format is
 camelCase. `DEBUG_FAKE_SUBTITLES = true` runs the whole UI pipeline with
 canned subtitles and no API key/capture (for smoke tests only).
