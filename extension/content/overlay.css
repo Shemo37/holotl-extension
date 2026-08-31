@@ -1,0 +1,82 @@
+#holotl-overlay-box {
+  position: fixed;
+  left: 50%;
+  bottom: 10%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  max-width: min(80vw, 900px);
+  min-width: 240px;
+  padding: 10px 36px 10px 16px;
+  border-radius: 10px;
+  background: rgba(10, 10, 14, 0.82);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  font-family: "Hiragino Sans", "Noto Sans JP", "Noto Sans Thai", "Yu Gothic",
+    sans-serif;
+  text-align: center;
+  cursor: grab;
+  user-select: none;
+  line-height: 1.45;
+}
+
+#holotl-overlay-box:active {
+  cursor: grabbing;
+}
+
+#holotl-status-dot {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+#holotl-status-dot[data-status="connected"] {
+  background: #4ade80;
+}
+
+#holotl-status-dot[data-status="connecting"],
+#holotl-status-dot[data-status="reconnecting"] {
+  background: #facc15;
+  animation: holotl-pulse 1s ease-in-out infinite;
+}
+
+#holotl-status-dot[data-status="error"] {
+  background: #f87171;
+}
+
+#holotl-status-dot[data-status="stopped"] {
+  background: #9ca3af;
+}
+
+@keyframes holotl-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+#holotl-jp-sub {
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 600;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  min-height: 1em;
+}
+
+#holotl-en-sub {
+  color: #d3e6ff;
+  font-size: 19px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+#holotl-en-sub:empty,
+#holotl-status-msg:empty {
+  display: none;
+}
+
+#holotl-status-msg {
+  color: #fca5a5;
+  font-size: 14px;
+  margin-top: 4px;
+}
