@@ -56,11 +56,13 @@ async function startCapture(tabId) {
     silenceGate = true,
     targetLang = DEFAULT_TARGET_LANG,
     totalUsd = 0,
+    vadSettings,
   } = await chrome.storage.local.get([
     "apiKey",
     "silenceGate",
     "targetLang",
     "totalUsd",
+    "vadSettings",
   ]);
   if (!apiKey && !DEBUG_FAKE_SUBTITLES) {
     throw new Error("Save your Gemini API key first");
@@ -91,7 +93,7 @@ async function startCapture(tabId) {
     action: "OFFSCREEN_START",
     streamId,
     apiKey,
-    settings: { silenceGate, targetLang },
+    settings: { silenceGate, targetLang, vadSettings },
     baseTotalUsd: totalUsd,
   });
   if (res && res.ok === false) throw new Error(res.error || "capture failed");
@@ -170,6 +172,7 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   const settings = {};
   if (changes.silenceGate) settings.silenceGate = changes.silenceGate.newValue;
   if (changes.targetLang) settings.targetLang = changes.targetLang.newValue;
+  if (changes.vadSettings) settings.vadSettings = changes.vadSettings.newValue;
   if (Object.keys(settings).length === 0) return;
   try {
     await chrome.runtime.sendMessage({

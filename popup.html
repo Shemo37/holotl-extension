@@ -145,7 +145,8 @@
         text-align: right;
         display: inline-block;
       }
-      #reset-appearance {
+      #reset-appearance,
+      #reset-vad {
         margin-top: 12px;
         background: #3b3b4a;
         width: 100%;
@@ -212,6 +213,7 @@
 
     <div class="tabbar">
       <button id="tab-btn-appearance" class="active">Appearance</button>
+      <button id="tab-btn-detection">Detection</button>
       <button id="tab-btn-debug">Debug</button>
     </div>
 
@@ -241,6 +243,38 @@
         <input id="bg-opacity" type="range" min="0" max="100" step="5" />
       </div>
       <button id="reset-appearance">Reset to defaults</button>
+    </div>
+
+    <div id="tab-detection" class="tabpanel" hidden>
+      <div class="ctl">
+        <span>Speech threshold <span class="val" id="vad-threshold-val"></span></span>
+        <input id="vad-threshold" type="range" min="0.05" max="0.95" step="0.05" />
+      </div>
+      <div class="ctl">
+        <span>Volume floor <span class="val" id="volume-threshold-val"></span></span>
+        <input id="volume-threshold" type="range" min="0" max="0.02" step="0.001" />
+      </div>
+      <div class="ctl">
+        <span>End-of-speech pause <span class="val" id="silence-timeout-val"></span></span>
+        <input id="silence-timeout" type="range" min="0.3" max="2" step="0.1" />
+      </div>
+      <div class="ctl">
+        <span>Min speech to trigger <span class="val" id="min-speech-val"></span></span>
+        <input id="min-speech" type="range" min="0" max="0.3" step="0.05" />
+      </div>
+      <div class="ctl">
+        <span>Cut at breath after <span class="val" id="soft-cut-after-val"></span></span>
+        <input id="soft-cut-after" type="range" min="1" max="10" step="0.5" />
+      </div>
+      <div class="ctl">
+        <span>Breath dip length <span class="val" id="soft-cut-silence-val"></span></span>
+        <input id="soft-cut-silence" type="range" min="0.1" max="0.7" step="0.05" />
+      </div>
+      <div class="ctl">
+        <span>Max subtitle length <span class="val" id="max-active-val"></span></span>
+        <input id="max-active" type="range" min="2" max="30" step="0.5" />
+      </div>
+      <button id="reset-vad">Reset to defaults</button>
     </div>
 
     <div id="tab-debug" class="tabpanel" hidden>

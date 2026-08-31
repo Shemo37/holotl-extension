@@ -2,7 +2,11 @@
 // two tabs — Appearance (live-applied overlay styling) and Debug (cost
 // meter + rolling event log). Offscreen broadcasts reach us directly.
 
-import { DEFAULT_TARGET_LANG, DEFAULT_APPEARANCE } from "./config.js";
+import {
+  DEFAULT_TARGET_LANG,
+  DEFAULT_APPEARANCE,
+  VAD_SETTINGS,
+} from "./config.js";
 
 const $ = (id) => document.getElementById(id);
 const keyInput = $("api-key");
@@ -27,6 +31,20 @@ const APPEARANCE_CONTROLS = {
 };
 let appearance = { ...DEFAULT_APPEARANCE };
 
+// Detection (VAD/chunking) controls: element id → vadSettings key + how to
+// print the value. Stored as `vadSettings` and applied live to the running
+// chunker via background's storage.onChanged relay.
+const VAD_CONTROLS = {
+  "vad-threshold": { key: "vadThreshold", fmt: (v) => v.toFixed(2) },
+  "volume-threshold": { key: "volumeThreshold", fmt: (v) => v.toFixed(3) },
+  "silence-timeout": { key: "silenceTimeoutS", fmt: (v) => `${v.toFixed(1)}s` },
+  "min-speech": { key: "minSpeechS", fmt: (v) => `${v.toFixed(2)}s` },
+  "soft-cut-after": { key: "softCutAfterS", fmt: (v) => `${v.toFixed(1)}s` },
+  "soft-cut-silence": { key: "softCutSilenceS", fmt: (v) => `${v.toFixed(2)}s` },
+  "max-active": { key: "maxActiveS", fmt: (v) => `${v.toFixed(1)}s` },
+};
+let vadSettings = { ...VAD_SETTINGS };
+
 init();
 
 async function init() {
@@ -36,12 +54,14 @@ async function init() {
     targetLang = DEFAULT_TARGET_LANG,
     totalUsd = 0,
     appearance: storedAppearance,
+    vadSettings: storedVad,
   } = await chrome.storage.local.get([
     "apiKey",
     "silenceGate",
     "targetLang",
     "totalUsd",
     "appearance",
+    "vadSettings",
   ]);
   if (apiKey) {
     keyInput.value = apiKey;
@@ -54,6 +74,9 @@ async function init() {
   appearance = { ...DEFAULT_APPEARANCE, ...(storedAppearance || {}) };
   renderAppearanceControls();
 
+  vadSettings = { ...VAD_SETTINGS, ...(storedVad || {}) };
+  renderVadControls();
+
   const { debugLog = [] } = await chrome.storage.session.get("debugLog");
   renderLog(debugLog);
 
@@ -65,6 +88,7 @@ async function init() {
 
 const tabs = [
   { btn: $("tab-btn-appearance"), panel: $("tab-appearance") },
+  { btn: $("tab-btn-detection"), panel: $("tab-detection") },
   { btn: $("tab-btn-debug"), panel: $("tab-debug") },
 ];
 for (const tab of tabs) {
@@ -139,6 +163,31 @@ $("reset-appearance").addEventListener("click", () => {
   appearance = { ...DEFAULT_APPEARANCE };
   renderAppearanceControls();
   chrome.storage.local.set({ appearance });
+});
+
+// ---- detection tab ----
+
+function renderVadControls() {
+  for (const [id, { key, fmt }] of Object.entries(VAD_CONTROLS)) {
+    $(id).value = vadSettings[key];
+    $(`${id}-val`).textContent = fmt(vadSettings[key]);
+  }
+}
+
+for (const [id, { key }] of Object.entries(VAD_CONTROLS)) {
+  $(id).addEventListener("input", () => {
+    vadSettings[key] = Number($(id).value);
+    renderVadControls();
+    // background relays storage changes to the offscreen document, which
+    // re-applies them to the running chunker — live, no reconnect.
+    chrome.storage.local.set({ vadSettings });
+  });
+}
+
+$("reset-vad").addEventListener("click", () => {
+  vadSettings = { ...VAD_SETTINGS };
+  renderVadControls();
+  chrome.storage.local.set({ vadSettings });
 });
 
 // ---- debug tab ----
