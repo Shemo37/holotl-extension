@@ -31,8 +31,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         chrome.storage.local.set({ totalUsd: msg.payload.totalUsd });
       }
       return;
+    case "DEBUG_LOG":
+      appendDebugLog(msg.payload?.line);
+      return;
     case "STATUS_UPDATE":
       relayToTab(msg);
+      appendDebugLog(
+        `status: ${msg.payload?.status}` +
+          (msg.payload?.message ? ` — ${msg.payload.message}` : "")
+      );
       if (msg.payload?.status === "error" && running) {
         // Reconnect cutoff or capture failure — tear down so the popup shows
         // Start again and the offscreen document doesn't linger.
@@ -91,9 +98,11 @@ async function startCapture(tabId) {
 
   activeTabId = tabId;
   running = true;
+  appendDebugLog(`capture started on tab ${tabId}`);
 }
 
 async function stopCapture({ silent = false } = {}) {
+  if (running) appendDebugLog("capture stopped");
   running = false;
   try {
     await chrome.runtime.sendMessage({
@@ -127,6 +136,23 @@ async function ensureOffscreenDocument() {
     reasons: ["USER_MEDIA"],
     justification:
       "Capture tab audio and stream it to the Gemini Live API for subtitles",
+  });
+}
+
+// Rolling debug log (popup Debug tab). chrome.storage.session survives the
+// service worker idling but clears when the browser closes — right scope
+// for diagnostics. Serialized through a promise chain so concurrent
+// appends don't drop lines.
+const DEBUG_LOG_MAX = 100;
+let debugLogChain = Promise.resolve();
+function appendDebugLog(line) {
+  if (!line) return;
+  debugLogChain = debugLogChain.then(async () => {
+    const { debugLog = [] } = await chrome.storage.session.get("debugLog");
+    debugLog.push(`${new Date().toLocaleTimeString()}  ${line}`);
+    await chrome.storage.session.set({
+      debugLog: debugLog.slice(-DEBUG_LOG_MAX),
+    });
   });
 }
 

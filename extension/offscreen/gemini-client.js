@@ -22,6 +22,7 @@ export class GeminiLiveClient {
    * @param {boolean} opts.debug
    * @param {(sub: {jp: string, en: string}) => void} opts.onSubtitleUpdate
    * @param {(status: string, message?: string) => void} opts.onStatusChange
+   * @param {(line: string) => void} [opts.onDebug]  wire-level event log
    */
   constructor(opts) {
     this.apiKey = opts.apiKey;
@@ -34,6 +35,7 @@ export class GeminiLiveClient {
     this.debug = !!opts.debug;
     this.onSubtitleUpdate = opts.onSubtitleUpdate || (() => {});
     this.onStatusChange = opts.onStatusChange || (() => {});
+    this.onDebug = opts.onDebug || (() => {});
 
     this.ws = null;
     this.intentionalClose = false;
@@ -61,6 +63,7 @@ export class GeminiLiveClient {
 
     ws.onopen = () => {
       if (ws !== this.ws) return;
+      this.onDebug(`socket open → sending setup for ${this.model}`);
       const setup = {
         model: this.model,
         systemInstruction: { parts: [{ text: this.systemInstruction }] },
@@ -90,12 +93,13 @@ export class GeminiLiveClient {
       if (!this._sessionSawMessage) {
         this.consecutiveFailures++;
       }
-      console.log(
-        `[HoloTL Live] session closed (code ${event.code}` +
-          (event.reason ? `, reason "${event.reason}"` : "") +
-          ") — likely the ~15-min session limit; reconnecting in " +
-          `${this.reconnectDelayMs}ms`
-      );
+      const closeLine =
+        `session closed (code ${event.code}` +
+        (event.reason ? `, reason "${event.reason}"` : "") +
+        ") — likely the ~15-min session limit; reconnecting in " +
+        `${this.reconnectDelayMs}ms`;
+      console.log(`[HoloTL Live] ${closeLine}`);
+      this.onDebug(closeLine);
       if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
         this.onStatusChange(
           "error",
@@ -148,6 +152,9 @@ export class GeminiLiveClient {
     if (this.debug && !this._loggedFirstFrame) {
       this._loggedFirstFrame = true;
       console.log("[HoloTL Live] first server frame:", text);
+      this.onDebug(
+        `first server frame: ${text.length > 600 ? text.slice(0, 600) + "…" : text}`
+      );
     }
 
     let msg;

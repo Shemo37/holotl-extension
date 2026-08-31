@@ -120,7 +120,11 @@ function connectClient() {
     onSubtitleUpdate: (payload) =>
       broadcast({ action: "UPDATE_SUBTITLES", payload }),
     onStatusChange: (status, message) => broadcastStatus(status, message),
+    onDebug: (line) => debugLog(line),
   });
+  debugLog(
+    `connecting: lang=${settings.targetLang}, silenceGate=${settings.silenceGate}`
+  );
   client.connect();
 }
 
@@ -200,6 +204,12 @@ function broadcast(msg) {
 
 function broadcastStatus(status, message) {
   broadcast({ action: "STATUS_UPDATE", payload: { status, message } });
+}
+
+// Debug log lines for the popup's Debug tab. The offscreen console dies
+// with the document, so background persists these in chrome.storage.session.
+function debugLog(line) {
+  broadcast({ action: "DEBUG_LOG", payload: { line } });
 }
 
 // ---- fake-segment mode (DEBUG_FAKE_SUBTITLES): no capture, no socket ----

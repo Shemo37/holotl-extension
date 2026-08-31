@@ -75,6 +75,18 @@ export const SILENCE_HANGOVER_MS = 1000;
 export const RECONNECT_DELAY_MS = 500;
 export const MAX_CONSECUTIVE_FAILURES = 10;
 
+// Overlay appearance defaults (popup → Appearance tab). The overlay content
+// script can't import this module — keep content/overlay.js's
+// APPEARANCE_DEFAULTS in sync when editing.
+export const DEFAULT_APPEARANCE = {
+  fontSizePx: 24, // JP line; translation line renders at 80%
+  jpColor: "#ffffff",
+  enColor: "#d3e6ff",
+  outlineWidthPx: 2, // 0 disables the outline
+  outlineColor: "#000000",
+  bgOpacity: 82, // percent, 0 = fully transparent box
+};
+
 // DEBUG logs the first raw server frame verbatim plus close codes/reasons.
 export const DEBUG = true;
 
