@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 14px;
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+        background: #14141a;
+        color: #e6e6ec;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 10px;
+      }
+      label {
+        display: block;
+        margin: 8px 0 3px;
+        color: #a3a3b2;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      input[type="password"],
+      select {
+        flex: 1;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid #33333f;
+        background: #1e1e26;
+        color: #e6e6ec;
+      }
+      button {
+        padding: 7px 12px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+        color: #fff;
+      }
+      #save-key {
+        background: #3b3b4a;
+      }
+      #start {
+        background: #16a34a;
+        flex: 1;
+      }
+      #stop {
+        background: #dc2626;
+        flex: 1;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 10px;
+        color: #a3a3b2;
+      }
+      #status {
+        margin-top: 10px;
+        min-height: 1.2em;
+        color: #facc15;
+      }
+      #status.connected {
+        color: #4ade80;
+      }
+      #status.error {
+        color: #f87171;
+      }
+      #cost {
+        margin-top: 4px;
+        color: #a3a3b2;
+      }
+      .buttons {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      #key-saved {
+        color: #4ade80;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>HoloLiveTL Live</h1>
+
+    <label for="api-key">Gemini API key</label>
+    <div class="row">
+      <input id="api-key" type="password" placeholder="AIza…" autocomplete="off" />
+      <button id="save-key">Save</button>
+    </div>
+    <span id="key-saved"></span>
+
+    <label for="target-lang">Translate to</label>
+    <select id="target-lang">
+      <option value="en">English (JP + EN)</option>
+      <option value="th">Thai (JP + TH)</option>
+    </select>
+
+    <label class="toggle">
+      <input id="silence-gate" type="checkbox" checked />
+      Silence gate (don't stream dead air)
+    </label>
+
+    <div class="buttons">
+      <button id="start">Start</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="cost">this session $0.000 / total $0.000</div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
