@@ -5,6 +5,9 @@
     <title>HoloLiveTL Live — offscreen audio capture</title>
   </head>
   <body>
+    <!-- ort is a classic-script global; it loads before the module script
+         (modules are deferred) so vad.js can use it. -->
+    <script src="../libs/ort/ort.min.js"></script>
     <script type="module" src="offscreen.js"></script>
   </body>
 </html>

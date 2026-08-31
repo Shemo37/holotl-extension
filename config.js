@@ -8,6 +8,10 @@
 // The model is ONE constant: swap it here and nothing else changes.
 // Default is a general Live model that follows the JP:/EN:/TH: system
 // instruction, so transcription AND translation arrive over the socket.
+// In practice this model streams inputTranscription (JA speech) and
+// outputTranscription (translation) events rather than prefixed turn text;
+// the client handles both shapes and keeps the two streams on separate
+// overlay lines.
 // "gemini-2.0-flash" is the named alternate. If you swap in the dedicated
 // "models/gemini-3.5-transcribe-live" instead: it ignores translation
 // instructions (JP-only output, the second line stays empty), it needs
@@ -66,8 +70,47 @@ export const SETUP_OVERRIDES = {};
 // Live streaming bills roughly by audio minutes sent.
 export const PRICE_PER_MIN = 0.009; // USD per minute of audio
 
-// Silence gate: chunks whose RMS stays below the threshold for longer than
-// the hangover are not sent (saves money during BGM lulls / dead air).
+// Client-side Silero VAD in front of the Live socket. Silero decides which
+// audio is worth streaming (BGM-proof, unlike an RMS gate) and audio is
+// STREAMED LIVE inside each detected speech window — the model translates
+// while the sentence is still being spoken, so subtitles land near-realtime
+// instead of one utterance late. Only window audio is sent, so the cost
+// meter reflects speech time, not stream time. Thresholds carry the
+// desktop app's tuning.
+export const USE_SILERO_VAD = true;
+export const VAD_SETTINGS = {
+  vadThreshold: 0.25, // Silero speech probability
+  volumeThreshold: 0.003, // cheap RMS pre-gate below which VAD never runs
+  // This much silence closes the speech window (finalizes the turn).
+  silenceTimeoutS: 0.7,
+  // Continuous speech required BEFORE a window opens — filters coughs,
+  // clicks, and one-frame blips from producing junk sends. Covered by the
+  // pre-roll buffer, so raising it costs no audio, just adds that much
+  // onset delay. 0 disables.
+  minSpeechS: 0.1,
+  // The model delivers its translation when the window closes, so run-on
+  // speech (radio-style streams) must be cut into short turns like the old
+  // chunked engine did: past softCutAfterS a breath-length dip
+  // (softCutSilenceS) is enough to close the window, and maxActiveS
+  // hard-cuts mid-speech as a last resort. Larger values = better
+  // sentence-level translation, smaller = snappier subtitles.
+  softCutAfterS: 2.5,
+  softCutSilenceS: 0.25,
+  maxActiveS: 3.5,
+};
+
+// Each VAD speech window is bracketed by the Live API's manual activity
+// signals (activityStart when speech begins, activityEnd on the silence
+// timeout, with the server's automatic detection disabled in setup), so
+// every utterance becomes its own model turn. If the preview model rejects
+// the setup field (socket closes before any server message), the client
+// auto-retries without the signals after 2 failed sessions and VAD keeps
+// working as a pure send gate.
+export const MANUAL_ACTIVITY = true;
+
+// Silence gate for the NON-VAD fallback path only (Silero failed to load):
+// chunks whose RMS stays below the threshold for longer than the hangover
+// are not sent (saves money during BGM lulls / dead air).
 export const SILENCE_RMS_THRESHOLD = 0.008;
 export const SILENCE_HANGOVER_MS = 1000;
 

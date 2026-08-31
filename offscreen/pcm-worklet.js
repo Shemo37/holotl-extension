@@ -1,15 +1,15 @@
-// AudioWorkletProcessor that turns the 16 kHz capture into ~100 ms PCM16
-// chunks (1600 samples) and posts each to the offscreen document together
-// with its RMS, so the silence gate can decide whether to send it.
+// AudioWorkletProcessor: mono mixdown packed into exact 512-sample Float32
+// frames (32 ms at 16 kHz — the frame size Silero VAD expects). The capture
+// AudioContext runs at 16 kHz, so no resampling happens here. The offscreen
+// document converts to PCM16 only for the audio actually sent to Gemini.
 
-const CHUNK_SAMPLES = 1600; // 100 ms at 16 kHz
+const FRAME_SIZE = 512;
 
-class PCMChunker extends AudioWorkletProcessor {
+class PCMFramer extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._buf = new Int16Array(CHUNK_SAMPLES);
+    this._buf = new Float32Array(FRAME_SIZE);
     this._len = 0;
-    this._sumSquares = 0;
   }
 
   process(inputs) {
@@ -27,20 +27,17 @@ class PCMChunker extends AudioWorkletProcessor {
       if (s > 1) s = 1;
       else if (s < -1) s = -1;
 
-      this._sumSquares += s * s;
-      this._buf[this._len++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      this._buf[this._len++] = s;
 
-      if (this._len === CHUNK_SAMPLES) {
-        const rms = Math.sqrt(this._sumSquares / CHUNK_SAMPLES);
-        const samples = this._buf;
-        this.port.postMessage({ samples, rms }, [samples.buffer]);
-        this._buf = new Int16Array(CHUNK_SAMPLES);
+      if (this._len === FRAME_SIZE) {
+        const out = this._buf;
+        this.port.postMessage(out.buffer, [out.buffer]);
+        this._buf = new Float32Array(FRAME_SIZE);
         this._len = 0;
-        this._sumSquares = 0;
       }
     }
     return true;
   }
 }
 
-registerProcessor("pcm-chunker", PCMChunker);
+registerProcessor("pcm-framer", PCMFramer);
