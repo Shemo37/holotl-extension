@@ -54,8 +54,8 @@ export const ROSTER_HINT =
   "Hakui Koyori, Kazama Iroha.";
 
 // Extra fields merged into the setup payload's `setup` object, applied last
-// so they win. Empty for general Live models. Hard-won fact from the
-// earlier transcribe-live work (see root README): that model needs
+// so they win. Empty for general Live models. Hard-won fact from this
+// repo's earlier transcribe-live experiments: that model needs
 //   { inputAudioTranscription: { mode: "VERBATIM" } }
 // — mode "SMART" silently produces no output. The wire format is camelCase.
 // If the server closes the socket right after setup, this block and the

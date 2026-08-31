@@ -1,16 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "HoloTL — Live JP Subtitles (Gemini)",
+  "name": "HoloLiveTL Live — real-time JP subtitles",
   "version": "0.1.0",
-  "description": "Live-translates Japanese audio from this tab into subtitles using the Gemini API, with in-browser Silero VAD chunking and a per-stream cost meter.",
-  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting", "tabs"],
+  "description": "Live Japanese subtitles with English or Thai translation for any tab, streamed via the Gemini Live API over WebSockets.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting"],
   "host_permissions": ["https://generativelanguage.googleapis.com/*"],
-  "background": { "service_worker": "background/service-worker.js" },
-  "action": {
-    "default_title": "HoloTL",
-    "default_popup": "popup/popup.html"
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
   },
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "HoloLiveTL Live"
   }
 }

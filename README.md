@@ -1,122 +1,114 @@
-# HoloTL Browser Extension — Live JP Subtitles via Gemini
+# HoloLiveTL Live — Gemini Live API subtitles
 
-Chrome (Manifest V3) extension that live-translates Japanese speech from any
-browser tab into on-page subtitles, using **only the Google Gemini API** for
-transcription/translation. It is a browser port of the
-[HoloTL desktop app](../HoloLiveTL-main)'s pipeline: the same Silero VAD
-dynamic chunking heuristics run in-browser (onnxruntime-web), each detected
-utterance is sent to Gemini as a WAV chunk, and a per-stream cost meter tracks
-real token usage.
+Chrome MV3 extension that streams tab audio to the **Gemini Multimodal Live
+API over WebSockets** and renders real-time Japanese subtitles with an
+English or Thai translation as a draggable on-page overlay.
 
-No build step — plain JS, vendored libraries, loaded unpacked.
+No build step — plain JS, loaded unpacked.
+
+> An earlier chunk-based engine (Silero VAD → WAV chunks → one
+> `generateContent` REST call per utterance) lived in this repo and was
+> removed in favor of this Live streaming approach — see git history if
+> resurrecting it.
+
+```
+tab audio ─tabCapture─▶ offscreen document
+   ├─▶ native-rate AudioContext ─▶ speakers (tab stays audible, unresampled)
+   └─▶ 16 kHz AudioContext ─▶ AudioWorklet (100 ms PCM16 chunks + RMS)
+         └─▶ silence gate ─▶ base64 ─▶ WebSocket BidiGenerateContent
+               └─▶ "JP: …" / "EN: …" (or "TH: …") lines ─▶ overlay
+```
 
 ## Install
 
-1. Open `chrome://extensions`, enable **Developer mode**.
-2. **Load unpacked** → select this folder (`holotl-extension`).
-3. Get a Gemini API key at <https://aistudio.google.com/apikey>.
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
+   select this repo folder (`holotl-extension`).
+2. Get a Gemini API key at <https://aistudio.google.com/apikey>.
+3. Click the toolbar icon → paste the key → **Save**. The key lives only in
+   `chrome.storage.local`. **Never commit it, and never publish a build of
+   this extension with a key embedded — anyone could extract and bill it.**
 
 ## Use
 
-1. Open the stream/VOD tab (YouTube, Twitch, …) and start playback.
-2. Click the HoloTL toolbar icon → paste your API key → **Start captioning
-   this tab**.
-3. Subtitles appear as a draggable overlay over the page (they follow
-   fullscreen video too). Stop from the same popup.
+1. Open the stream tab, start playback.
+2. Popup → pick **Translate to** (English default, or Thai) → **Start**.
+3. Subtitles appear in a draggable dark box (`JP` line on top, translation
+   beneath), with a status dot: green connected, amber (re)connecting, red
+   error. Subtitles clear after 4 s of silence. **Stop** from the popup.
 
-Output modes: **EN** (translate), **JA** (transcribe verbatim), **JA + EN**
-(both lines from a single request — same cost as one mode).
+The popup has two tabs:
 
-## Engine notes
+- **Appearance** — font size, JP/translation text colors, text border
+  (outline) width and color, and box background opacity. Every change
+  applies to the overlay instantly (stored in `chrome.storage.local`, the
+  overlay watches for changes), with a reset-to-defaults button.
+- **Debug** — the cost meter (session / all-time, plus audio-seconds sent
+  vs wall-clock) and a rolling event log: connection opens, close
+  codes/reasons, reconnects, status changes, and the first raw server frame.
+  The log survives popup close (session storage) and clears when the
+  browser closes or via the Clear button.
 
-One `generateContent` request per VAD-detected utterance; subtitles appear
-~1–2 s after each line ends (lower the silence-cut slider to ~0.5 s for the
-snappiest feel).
+Changing the translation language while running reconnects the Live session
+(~0.5 s gap) — the language lives in the session's system instruction.
 
-**Model choice is a quality/latency trade.** The default
-`gemini-3.7-flash` gives the best translations but cannot fully disable
-thinking (`thinkingLevel: "low"` is its floor; `thinkingBudget` is silently
-ignored) and runs 10–30 s per chunk. The consumer loop keeps up regardless —
-up to 6 requests fly concurrently (2 for lite models) with results delivered
-in stream order — so a slow model costs subtitle *delay*, never dropped
-audio. For near-real-time subtitles (~1–2 s) switch Model id to
-`gemini-3.5-flash-lite`: lite models don't think by default and answer in
-about a second, at somewhat lower translation quality. For non-lite models
-the client walks a thinking-config ladder (`minimal` → `low` →
-`thinkingBudget: 0` → none) and remembers what the model accepts; models
-with "lite" in the id get no thinking config at all, since it could only
-turn thinking on. With a fast-talking streamer on a non-lite model, raise
-Requests/min toward 60 so dispatch spacing isn't the bottleneck.
+## Model
 
-A Gemini **Live API** streaming engine (word-by-word partials via
-`gemini-3.5-transcribe-live`) existed briefly and was removed by request —
-see git/README history if resurrecting it. Hard-won facts from that work:
-the Live wire format is camelCase (`serverContent.interimInputTranscription`),
-`mode: "SMART"` silently produces no output (use VERBATIM), and the dedicated
-transcribe model refuses to transcribe singing over music.
+One constant in `config.js`:
 
-## How it works
-
-```
-tab audio ──(tabCapture + offscreen document)──▶ AudioContext
-   ├─▶ speakers (playback continues)
-   └─▶ AudioWorklet: mono mixdown + resample to 16 kHz + 512-sample frames
-         └─▶ Silero VAD v4 (onnxruntime-web, WASM) — desktop app's exact
-             frame loop: 0.25 threshold, ~288 ms pre-roll, 0.9 s silence cut,
-             8 s max chunk, loud-sound bypass
-               └─▶ enhancement (60 Hz low-cut, RMS normalize) ─▶ WAV
-                     └─▶ drop-oldest queue (8) ─▶ rate limiter (30 rpm)
-                           └─▶ Gemini generateContent (inline WAV, temp 0)
-                                 └─▶ string filters (hallucination/boilerplate/
-                                     dedup) ─▶ overlay subtitle
+```js
+export const LIVE_MODEL = "models/gemini-3.5-live-translate-preview";
 ```
 
-- Slow API responses never cause lag: the bounded drop-oldest queue discards
-  the oldest chunks so subtitles stay live.
-- Errors: per-minute 429s trigger a 5–30 s cooldown (chunks silently dropped);
-  a daily-quota 429, bad key (401/403), bad model id (404), or 3 consecutive
-  failures stop the session with the reason shown in the overlay and popup.
-- Cost meter reads `usageMetadata` token counts from every response (falls
-  back to 32 audio tokens/s + chars/4 estimates), with editable $/1M-token
-  prices. Session cost and an all-time total are shown in the popup.
+`gemini-2.0-flash` is the tested alternate. Any general Live model that
+follows the system instruction produces both lines. If you swap in the
+dedicated `models/gemini-3.5-transcribe-live` instead, know its quirks
+(learned the hard way in this repo's earlier Live experiments):
 
-## Settings notes
+- it **ignores translation instructions** — you get JP only, the second
+  line stays empty (the parser tolerates this);
+- it needs `SETUP_OVERRIDES = { inputAudioTranscription: { mode: "VERBATIM" } }`
+  in `config.js` — mode `SMART` silently produces no output;
+- it refuses to transcribe singing over music.
 
-- **Model id** defaults to `gemini-3.5-flash-lite` and is editable — but see
-  the latency requirement under Engine notes before picking a non-lite
-  model. The dedicated `gemini-3.5-transcribe` model is *not* supported: it
-  is served only through the Interactions/Live APIs and cannot translate.
-- API key and model changes apply on the next Start; everything else
-  (VAD sliders, rpm, prices, output mode, overlay) applies live.
-- The Hololive JP roster toggle appends ~32 talent names to the prompt so
-  Gemini spells names correctly.
+## Cost
 
-## Vendored libraries (`libs/`)
+Live streaming bills by audio time sent, `PRICE_PER_MIN` (default $0.009/min
+≈ **$0.54 per hour** of wall-clock streaming). Two things keep that visible
+and reducible:
 
-- `ort/` — [onnxruntime-web 1.19.2](https://www.npmjs.com/package/onnxruntime-web)
-  dist (`ort.min.js`, `ort-wasm-simd-threaded.{wasm,mjs}`). Single-threaded
-  WASM only (`numThreads = 1`) — MV3 CSP blocks the blob workers the threaded
-  path spawns. CSP carries `'wasm-unsafe-eval'` for this.
-- `silero_vad_legacy.onnx` — Silero VAD v4, from
-  [@ricky0123/vad-web 0.0.22](https://www.npmjs.com/package/@ricky0123/vad-web)
-  dist. Same model generation as the desktop app's `silero_vad.jit`, so its
-  tuned 0.25 threshold transfers.
+- the **silence gate** (popup toggle) stops sending audio after 1 s below an
+  RMS threshold, so BGM lulls and dead air cost nothing;
+- the popup's **Debug tab** shows **this session / all-time** spend,
+  computed from audio seconds actually sent (persisted across sessions).
 
-## Dev smoke test
+Verify the price against Google's current pricing and adjust
+`PRICE_PER_MIN` in `config.js`.
 
-`dev-test.html` loads the vendored ort + Silero model outside the extension
-and prints load time / per-frame latency / sanity probabilities. Serve the
-folder with correct MIME types and open it:
+## Session limit and reconnects
 
-```bash
-python -c "from http.server import HTTPServer, SimpleHTTPRequestHandler as H; H.extensions_map['.mjs']='text/javascript'; HTTPServer(('127.0.0.1',8622), H).serve_forever()"
-```
+Live API sessions are capped at roughly **15 minutes** server-side. When the
+socket closes, the client reconnects after 500 ms automatically — you'll see
+the amber dot blink and lose about a second of audio. Guards:
+
+- **Stop** sets an intentional-close flag — no reconnect;
+- 10 consecutive connection failures without a single server message (bad
+  key, bad model id) stop the session with a red error status instead of
+  hammering the endpoint every 500 ms.
+
+## Debugging schema drift
+
+Preview Live models change shape. The popup's **Debug tab** shows the
+first server frame (truncated) and every close code/reason without opening
+any console. For the full frame, `DEBUG = true` in `config.js` (default on)
+logs it verbatim in the offscreen console (`chrome://extensions` →
+offscreen document → Inspect) — paste that log and the fix is usually a
+one-liner in `gemini-client.js` or `config.js`. The wire format is
+camelCase. `DEBUG_FAKE_SUBTITLES = true` runs the whole UI pipeline with
+canned subtitles and no API key/capture (for smoke tests only).
 
 ## Limitations
 
-- Chrome/Chromium only (uses `chrome.tabCapture` + offscreen documents).
-- DRM-protected tabs (Netflix etc.) capture silence. YouTube/Twitch are fine.
-- Subtitles cannot be drawn on restricted pages (`chrome://`, Web Store);
-  capture still works there but there is nowhere to render.
-- Requires a Gemini API key with quota; there is no local fallback engine by
-  design — when the key/quota dies, captioning stops and tells you why.
+- Chrome/Chromium only (`chrome.tabCapture` + offscreen documents).
+- DRM-protected tabs (Netflix etc.) capture silence.
+- Restricted pages (`chrome://`, Web Store) can't render the overlay.
+- Requires a Gemini API key with Live API quota.

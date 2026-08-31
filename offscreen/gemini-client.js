@@ -1,302 +1,251 @@
-// Gemini generateContent client: one request per VAD chunk, with a blocking
-// min-interval rate limiter, the DeepL-style error taxonomy from the desktop
-// app (429 handling extended per the Gemini design doc), and a token-based
-// cost meter fed by usageMetadata.
+// WebSocket client for the Gemini Multimodal Live API
+// (BidiGenerateContent). All wire-schema knowledge lives here and in
+// ../config.js.
+//
+// Live sessions are capped at ~15 minutes server-side; the server closes
+// the socket and this client transparently reconnects after
+// RECONNECT_DELAY_MS. `disconnect()` sets intentionalClose so Stop never
+// reconnects, and MAX_CONSECUTIVE_FAILURES sessions that die without a
+// single server message (bad key, bad model id) stop the client with an
+// "error" status instead of hammering the endpoint every 500 ms.
 
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
-const MAX_CONSECUTIVE_FAILURES = 3;
-
-class GeminiDead extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "GeminiDead";
-  }
-}
-
-class GeminiClient {
+export class GeminiLiveClient {
   /**
-   * settings: {apiKey, geminiModel, outputMode, rpm, priceInPer1M,
-   *            priceOutPer1M, includeRoster}
-   * onCost(sessionStats), onCooldown(seconds) are optional callbacks.
+   * @param {object} opts
+   * @param {string} opts.apiKey
+   * @param {string} opts.model            e.g. "models/gemini-3.5-live-translate-preview"
+   * @param {string} opts.wsUrlBase        wss://…/BidiGenerateContent
+   * @param {string} opts.systemInstruction
+   * @param {object} opts.setupOverrides   merged last into the setup object
+   * @param {number} opts.reconnectDelayMs
+   * @param {number} opts.maxConsecutiveFailures
+   * @param {boolean} opts.debug
+   * @param {(sub: {jp: string, en: string}) => void} opts.onSubtitleUpdate
+   * @param {(status: string, message?: string) => void} opts.onStatusChange
+   * @param {(line: string) => void} [opts.onDebug]  wire-level event log
    */
-  constructor(settings, { onCost, onCooldown } = {}) {
-    this.applySettings(settings);
-    this.onCost = onCost;
-    this.onCooldown = onCooldown;
+  constructor(opts) {
+    this.apiKey = opts.apiKey;
+    this.model = opts.model;
+    this.wsUrlBase = opts.wsUrlBase;
+    this.systemInstruction = opts.systemInstruction;
+    this.setupOverrides = opts.setupOverrides || {};
+    this.reconnectDelayMs = opts.reconnectDelayMs ?? 500;
+    this.maxConsecutiveFailures = opts.maxConsecutiveFailures ?? 10;
+    this.debug = !!opts.debug;
+    this.onSubtitleUpdate = opts.onSubtitleUpdate || (() => {});
+    this.onStatusChange = opts.onStatusChange || (() => {});
+    this.onDebug = opts.onDebug || (() => {});
 
-    this.lastRequestStart = 0;
-    this.cooldownUntil = 0;
+    this.ws = null;
+    this.intentionalClose = false;
     this.consecutiveFailures = 0;
-    this.session = { requests: 0, inTokens: 0, outTokens: 0, usd: 0 };
+    this._reconnectTimer = null;
+    this._sessionSawMessage = false;
+    this._loggedFirstFrame = false;
+
+    // Subtitle assembly state (per model turn).
+    this._turnText = "";
+    this._transcriptLine = "";
+    this._interimText = "";
   }
 
-  applySettings(s) {
-    this.apiKey = s.apiKey;
-    this.model = s.geminiModel;
-    this.outputMode = s.outputMode;
-    this.minIntervalMs = 60000 / Math.min(60, Math.max(1, s.rpm));
-    this.priceInPer1M = s.priceInPer1M;
-    this.priceOutPer1M = s.priceOutPer1M;
-    this.includeRoster = s.includeRoster;
-  }
-
-  buildPrompt() {
-    let prompt = HOLOTL.PROMPTS[this.outputMode] || HOLOTL.PROMPTS.translate;
-    if (this.includeRoster) {
-      prompt += HOLOTL.PROMPTS.rosterSuffix(HOLOTL.ROSTER_JP);
-    }
-    return prompt;
-  }
-
-  get inCooldown() {
-    return Date.now() < this.cooldownUntil;
-  }
-
-  // Thinking burns seconds per call and adds nothing to transcription or
-  // translation. Walk the ladder for every model, lite included: explicitly
-  // asking for minimal thinking can only reduce it. Gemini 3 models take
-  // thinkingLevel (non-lite Flash can NOT fully disable thinking — "low" is
-  // its floor, measured 12-30s/chunk on gemini-3.7-flash; the concurrent
-  // consumer loop absorbs that as delay instead of dropped audio); 2.5-era
-  // models take thinkingBudget and ignore thinkingLevel-style config. A 400
-  // advances the ladder (see transcribeChunk) and the result is remembered.
-  _buildGenerationConfig() {
-    const generationConfig = { temperature: 0 };
-    // Start at "low", not "minimal": every model tested (gemini-3.7-flash,
-    // gemini-3.5-flash-lite) rejects MINIMAL with a 400, which wastes a
-    // request per session and lands a scary-looking entry in
-    // chrome://extensions' error collector. Models that would accept
-    // minimal (3.6-flash per docs) simply run at low instead.
-    if (this.thinkingMode === undefined) this.thinkingMode = "level";
-    if (this.thinkingMode === "minimal") {
-      generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
-    } else if (this.thinkingMode === "level") {
-      generationConfig.thinkingConfig = { thinkingLevel: "low" };
-    } else if (this.thinkingMode === "budget") {
-      generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    }
-    return generationConfig;
-  }
-
-  /**
-   * Text-only JA→EN repair call, used when a chunk response contained
-   * Japanese but no English. Small, occasional, and quality-of-life — it
-   * skips the rate limiter and never strikes the session; failures just
-   * leave the subtitle Japanese-only. Cost is metered like any request.
-   */
-  async translateText(jaText) {
-    try {
-      const response = await fetch(
-        GEMINI_BASE + encodeURIComponent(this.model) + ":generateContent",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: HOLOTL.PROMPTS.textTranslate + "\n\n" + jaText }] }],
-            generationConfig: this._buildGenerationConfig(),
-          }),
-        }
-      );
-      if (!response.ok) {
-        console.warn("🩹 EN repair call failed: HTTP", response.status);
-        return null;
-      }
-      const body = await response.json();
-      const text =
-        body?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") ?? "";
-      if (!text) return null;
-      this._accountCost(body.usageMetadata, 0, text);
-      return text;
-    } catch (e) {
-      console.warn("🩹 EN repair call failed:", e.message);
-      return null;
-    }
-  }
-
-  // Serializes request *spacing* while allowing overlapping flight — with
-  // concurrent callers, each acquires the next dispatch slot in turn.
-  async rateLimit() {
-    const prev = this._rlChain || Promise.resolve();
-    let release;
-    this._rlChain = new Promise((r) => (release = r));
-    await prev;
-    try {
-      const wait = this.lastRequestStart + this.minIntervalMs - Date.now();
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      this.lastRequestStart = Date.now();
-    } finally {
-      release();
-    }
-  }
-
-  /**
-   * Transcribe/translate one chunk. Returns {text, fetchMs, waitMs} on a
-   * response ('' text when Gemini decided there is no speech), or null when
-   * the chunk was skipped (cooldown, transient error). Throws GeminiDead
-   * when the engine is done for the session. Safe to call concurrently —
-   * dispatch spacing is serialized by rateLimit(), flight overlaps.
-   */
-  async transcribeChunk(wavBase64, chunkSeconds) {
-    if (this.inCooldown) return null; // silent skip, chunk dropped
-
-    const callStart = performance.now();
-    await this.rateLimit();
-    const waitMs = performance.now() - callStart;
-
-    const generationConfig = this._buildGenerationConfig();
-
-    const fetchStart = performance.now();
-    // A hung request must not stall the pipeline silently — abort hard.
-    // 45s: non-lite models with thinking at its floor have been measured
-    // near 30s on hard audio; aborting those would strike a working session.
-    const abort = new AbortController();
-    const abortTimer = setTimeout(() => abort.abort(), 45000);
-    let response;
-    try {
-      response = await fetch(
-        GEMINI_BASE + encodeURIComponent(this.model) + ":generateContent",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": this.apiKey,
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  { text: this.buildPrompt() },
-                  { inline_data: { mime_type: "audio/wav", data: wavBase64 } },
-                ],
-              },
-            ],
-            generationConfig,
-          }),
-          signal: abort.signal,
-        }
-      );
-    } catch (e) {
-      return this._strike(
-        e.name === "AbortError" ? "Request timed out after 45s" : `Network error: ${e.message}`
-      );
-    } finally {
-      clearTimeout(abortTimer);
-    }
-    const fetchMs = performance.now() - fetchStart;
-
-    if (response.status === 400 && this.thinkingMode !== "none") {
-      let why = "";
-      try {
-        why = (await response.clone().json())?.error?.message || "";
-      } catch (e) {
-        /* non-JSON body */
-      }
-      const next = { minimal: "level", level: "budget", budget: "none" }[this.thinkingMode];
-      console.warn(
-        `⚠️ Model rejected thinking config "${this.thinkingMode}" — trying "${next}". API said: ${why}`
-      );
-      this.thinkingMode = next;
-      return this.transcribeChunk(wavBase64, chunkSeconds);
-    }
-
-    if (!response.ok) {
-      let errorBody = null;
-      try {
-        errorBody = await response.json();
-      } catch (e) {
-        /* non-JSON error body */
-      }
-      return this._handleHttpError(response.status, errorBody);
-    }
-
-    let body;
-    try {
-      body = await response.json();
-    } catch (e) {
-      return this._strike("Malformed JSON response from Gemini");
-    }
-
-    this.consecutiveFailures = 0;
-    const text =
-      body?.candidates?.[0]?.content?.parts
-        ?.map((p) => p.text || "")
-        .join("") ?? "";
-    this._accountCost(body.usageMetadata, chunkSeconds, text);
-    return { text, fetchMs, waitMs };
-  }
-
-  _handleHttpError(status, body) {
-    const apiMessage = body?.error?.message || "";
-    if (status === 429) {
-      if (this._isDailyQuota(body)) {
-        throw new GeminiDead(
-          "Gemini daily quota exhausted for this API key. Try again tomorrow or upgrade the key."
-        );
-      }
-      const seconds = this._retryDelaySeconds(body);
-      this.cooldownUntil = Date.now() + seconds * 1000;
-      console.warn(`⏳ Gemini rate-limited; cooling down ${seconds}s`);
-      if (this.onCooldown) this.onCooldown(seconds);
-      return null;
-    }
-    if (status === 401 || status === 403) {
-      throw new GeminiDead(`Gemini API key rejected (HTTP ${status}). ${apiMessage}`);
-    }
-    if (status === 404) {
-      throw new GeminiDead(
-        `Gemini model "${this.model}" not found (HTTP 404). Check the model id in settings.`
-      );
-    }
-    return this._strike(`Gemini HTTP ${status}: ${apiMessage || "unknown error"}`);
-  }
-
-  _isDailyQuota(body) {
-    const details = body?.error?.details || [];
-    for (const d of details) {
-      for (const v of d.violations || []) {
-        const id = `${v.quotaId || ""} ${v.quotaMetric || ""}`;
-        if (/perday|per_day|daily/i.test(id)) return true;
-      }
-    }
-    return /per day|daily/i.test(body?.error?.message || "");
-  }
-
-  _retryDelaySeconds(body) {
-    const details = body?.error?.details || [];
-    for (const d of details) {
-      if (d["@type"]?.includes("RetryInfo") && d.retryDelay) {
-        const s = parseFloat(String(d.retryDelay).replace(/s$/i, ""));
-        if (Number.isFinite(s)) return Math.min(30, Math.max(5, s));
-      }
-    }
-    return 10;
-  }
-
-  _strike(message) {
-    this.consecutiveFailures++;
-    console.warn(
-      `🔴 Gemini failure ${this.consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}: ${message}`
+  connect() {
+    if (this.intentionalClose) return;
+    this._sessionSawMessage = false;
+    this.onStatusChange(
+      this.consecutiveFailures > 0 ? "reconnecting" : "connecting"
     );
-    if (this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      throw new GeminiDead(`Gemini failed ${MAX_CONSECUTIVE_FAILURES} times in a row: ${message}`);
-    }
-    return null;
+
+    const url = `${this.wsUrlBase}?key=${encodeURIComponent(this.apiKey)}`;
+    const ws = new WebSocket(url);
+    this.ws = ws;
+
+    ws.onopen = () => {
+      if (ws !== this.ws) return;
+      this.onDebug(`socket open → sending setup for ${this.model}`);
+      const setup = {
+        model: this.model,
+        systemInstruction: { parts: [{ text: this.systemInstruction }] },
+        ...this.setupOverrides,
+      };
+      ws.send(JSON.stringify({ setup }));
+    };
+
+    ws.onmessage = (event) => {
+      if (ws !== this.ws) return;
+      this._handleMessage(event.data);
+    };
+
+    ws.onerror = () => {
+      // The paired close event carries the actionable code/reason.
+      if (ws === this.ws && this.debug) {
+        console.warn("[HoloTL Live] websocket error (close event follows)");
+      }
+    };
+
+    ws.onclose = (event) => {
+      if (ws !== this.ws) return;
+      if (this.intentionalClose) {
+        this.onStatusChange("stopped");
+        return;
+      }
+      if (!this._sessionSawMessage) {
+        this.consecutiveFailures++;
+      }
+      const closeLine =
+        `session closed (code ${event.code}` +
+        (event.reason ? `, reason "${event.reason}"` : "") +
+        ") — likely the ~15-min session limit; reconnecting in " +
+        `${this.reconnectDelayMs}ms`;
+      console.log(`[HoloTL Live] ${closeLine}`);
+      this.onDebug(closeLine);
+      if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+        this.onStatusChange(
+          "error",
+          `Connection failed ${this.consecutiveFailures} times in a row ` +
+            `(last close code ${event.code}` +
+            (event.reason ? `: ${event.reason}` : "") +
+            "). Check your API key and the model id, then Start again."
+        );
+        return;
+      }
+      this.onStatusChange("reconnecting");
+      this._reconnectTimer = setTimeout(
+        () => this.connect(),
+        this.reconnectDelayMs
+      );
+    };
   }
 
-  _accountCost(usage, chunkSeconds, text) {
-    // Real token counts when the API provides them; estimates otherwise
-    // (32 audio tokens/sec is the documented audio billing rate).
-    const inTok =
-      usage?.promptTokenCount ?? Math.ceil(chunkSeconds * HOLOTL.AUDIO_TOKENS_PER_SECOND);
-    const outTok =
-      usage?.candidatesTokenCount ?? Math.ceil(text.length / HOLOTL.OUTPUT_CHARS_PER_TOKEN);
+  /** Send one base64-encoded 16 kHz PCM16 chunk. */
+  sendAudioChunk(base64) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      JSON.stringify({
+        realtimeInput: {
+          mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: base64 }],
+        },
+      })
+    );
+  }
 
-    this.session.requests += 1;
-    this.session.inTokens += inTok;
-    this.session.outTokens += outTok;
-    this.session.usd +=
-      (inTok * this.priceInPer1M + outTok * this.priceOutPer1M) / 1e6;
+  disconnect() {
+    this.intentionalClose = true;
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
+    try {
+      this.ws?.close();
+    } catch {
+      /* already closed */
+    }
+  }
 
-    if (this.onCost) this.onCost({ ...this.session });
+  async _handleMessage(data) {
+    let text;
+    try {
+      text = data instanceof Blob ? await data.text() : String(data);
+    } catch (e) {
+      console.warn("[HoloTL Live] unreadable frame", e);
+      return;
+    }
+    if (this.debug && !this._loggedFirstFrame) {
+      this._loggedFirstFrame = true;
+      console.log("[HoloTL Live] first server frame:", text);
+      this.onDebug(
+        `first server frame: ${text.length > 600 ? text.slice(0, 600) + "…" : text}`
+      );
+    }
+
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      console.warn("[HoloTL Live] non-JSON frame:", text.slice(0, 500));
+      return;
+    }
+
+    // Any parsed server message proves the key/model are accepted.
+    this._sessionSawMessage = true;
+    this.consecutiveFailures = 0;
+
+    if (msg.setupComplete !== undefined) {
+      this.onStatusChange("connected");
+      return;
+    }
+
+    const sc = msg.serverContent;
+    if (!sc) return;
+
+    let updated = false;
+
+    if (sc.modelTurn?.parts) {
+      for (const part of sc.modelTurn.parts) {
+        if (typeof part.text === "string" && part.text) {
+          this._turnText += part.text;
+          updated = true;
+        }
+      }
+    }
+
+    // Transcription-shaped fallbacks (camelCase wire format; used by the
+    // dedicated transcribe model): interim frames replace, finals append.
+    const interim = sc.interimInputTranscription ?? sc.interimTranscription;
+    if (typeof interim?.text === "string") {
+      this._interimText = interim.text;
+      updated = true;
+    }
+    const finals = [sc.inputTranscription, sc.outputTranscription];
+    for (const t of finals) {
+      if (typeof t?.text === "string" && t.text) {
+        this._transcriptLine = this._appendTranscript(
+          this._transcriptLine,
+          t.text
+        );
+        this._interimText = "";
+        updated = true;
+      }
+    }
+
+    if (updated) this.onSubtitleUpdate(this._composeSubtitle());
+
+    if (sc.turnComplete) {
+      this._turnText = "";
+      this._transcriptLine = "";
+      this._interimText = "";
+    }
+  }
+
+  _appendTranscript(line, text) {
+    line = line ? line + text : text;
+    // Keep the visible line bounded; the overlay is one line of context.
+    const MAX = 120;
+    return line.length > MAX ? line.slice(line.length - MAX) : line;
+  }
+
+  // Parse the accumulated turn text for JP:/EN:/TH: prefixed lines. The
+  // translation lands in `en` whichever target language it is (the overlay
+  // has one translation slot). Unprefixed text counts as JP so a model that
+  // ignores the instruction still renders. Transcription events fill JP
+  // when the model turn carried none.
+  _composeSubtitle() {
+    let jp = "";
+    let en = "";
+    for (const rawLine of this._turnText.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const m = /^(JP|JA|EN|TH)\s*[:：]\s*(.*)$/i.exec(line);
+      if (m) {
+        const tag = m[1].toUpperCase();
+        if (tag === "JP" || tag === "JA") jp = m[2];
+        else en = m[2];
+      } else {
+        jp = jp ? jp + " " + line : line;
+      }
+    }
+    if (!jp) {
+      jp = this._transcriptLine + this._interimText;
+    }
+    return { jp, en };
   }
 }
