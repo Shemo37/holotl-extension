@@ -159,3 +159,9 @@ Open the popup's **Debug tab** first — it answers most of these.
 - DRM-protected tabs (Netflix etc.) capture silence.
 - Restricted pages (`chrome://`, Web Store) can't render the overlay.
 - Requires a Gemini API key with Live API quota.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). Bundled third-party components (ONNX
+Runtime Web, Silero VAD) keep their own MIT licenses — see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
