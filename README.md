@@ -4,6 +4,12 @@ Chrome MV3 extension that streams tab audio to the **Gemini Multimodal Live
 API over WebSockets** and renders real-time Japanese subtitles with an
 English or Thai translation as a draggable on-page overlay.
 
+A second, selectable backend sends the audio to
+[HOLOTLLOCAL](https://github.com/Shemo37/HOLOTLLOCAL) instead: the HoloLiveTL
+desktop app's pipeline (kotoba-whisper + FuguMT) running headless on your
+own GPU. It's free per minute, needs no API key, and is English only. See
+[Local pipeline backend](#local-pipeline-backend).
+
 No build step — plain JS, loaded unpacked.
 
 > An earlier chunk-based engine (Silero VAD → WAV chunks → one
@@ -31,6 +37,8 @@ tab audio ─tabCapture─▶ offscreen document
 - `offscreen/offscreen.js` — audio pipeline, silence gate, cost meter.
 - `offscreen/gemini-client.js` — **all Live wire-schema knowledge** (setup,
   audio frames, response parsing, reconnect).
+- `offscreen/local-client.js` — client for the HOLOTLLOCAL pipeline server
+  (sends one PCM16 message per utterance, reads `{jp, en}` back).
 - `offscreen/pcm-worklet.js` — 16 kHz Float32→PCM16 chunker with RMS.
 - `content/overlay.js` + `content/overlay.css` — the injected subtitle
   overlay.
@@ -45,9 +53,10 @@ tab audio ─tabCapture─▶ offscreen document
    `chrome.storage.local`. **Never commit it, and never publish a build of
    this extension with a key embedded — anyone could extract and bill it.**
 
-All settings live in `chrome.storage.local` under `apiKey`, `targetLang`,
-`silenceGate`, `appearance`, and `totalUsd` (all-time spend) — removing the
-extension clears all of them, key included.
+All settings live in `chrome.storage.local` under `backend`, `apiKey`,
+`localServerUrl`, `targetLang`, `silenceGate`, `appearance`, `vadSettings` /
+`localVadSettings` (Detection tuning per backend), and `totalUsd` (all-time
+spend). Removing the extension clears all of them, key included.
 
 ## Use
 
@@ -71,6 +80,39 @@ The popup has two tabs:
 
 Changing the translation language while running reconnects the Live session
 (~0.5 s gap) — the language lives in the session's system instruction.
+
+## Local pipeline backend
+
+Popup → **Backend: Local pipeline (HOLOTLLOCAL)** sends audio to the
+[HOLOTLLOCAL](https://github.com/Shemo37/HOLOTLLOCAL) server on this
+machine instead of Gemini:
+
+```
+tab audio → Silero VAD window (buffered, not streamed) → one PCM16 message
+  → ws://127.0.0.1:8765 → kotoba-whisper → filters → FuguMT → {jp, en} → overlay
+```
+
+1. Install and start HOLOTLLOCAL (`StartServer.bat`, or `python server.py`)
+   and wait for `Pipeline ready`. It must be running **before** Start.
+2. Popup → Backend → **Local pipeline**. Change **Local server** only if you
+   started the server with a different `--port`.
+3. **Start** as usual.
+
+Differences from the Gemini backend:
+
+- **Whole utterances.** Whisper can't translate mid-sentence, so each VAD
+  window is sent when it closes. A subtitle lands about one decode after the
+  speaker pauses, not while they talk.
+- **Its own Detection defaults.** Pause 0.9 s, max 8 s, no breath-dip cut:
+  the desktop app's dynamic-chunking values, because longer windows
+  translate better. They're stored separately from the Gemini tuning.
+- **English only.** kotoba-whisper-bilingual and FuguMT are JA↔EN models,
+  so Thai is disabled while this backend is selected.
+- **$0 cost** in the Debug tab. Audio seconds sent are still counted.
+- Backend, server URL and API key changes apply on the next **Start**.
+
+The server accepts only `chrome-extension://` origins, so web pages can't
+use it. Its README covers pinning your exact extension ID.
 
 ## Model
 
@@ -152,13 +194,23 @@ Open the popup's **Debug tab** first — it answers most of these.
   document crashed); Stop, reload the tab, Start again.
 - **Amber dot every ~15 minutes** — normal; that's the Live session limit
   rollover (see above).
+- **Local: "Local pipeline server not reachable"** — HOLOTLLOCAL isn't
+  running, or it's on another port. Start it, wait for `Pipeline ready`,
+  then Start again.
+- **Local: amber dot, popup says "connecting: Loading ASR model..."** — the
+  server is still loading models (the first run downloads them). Speech in
+  that window is dropped; subtitles start once it reports ready.
+- **Local: "Another client connected…"** — the server serves one client at
+  a time and a second browser/profile took over. Stop that one.
 
 ## Limitations
 
 - Chrome/Chromium only (`chrome.tabCapture` + offscreen documents).
 - DRM-protected tabs (Netflix etc.) capture silence.
 - Restricted pages (`chrome://`, Web Store) can't render the overlay.
-- Requires a Gemini API key with Live API quota.
+- The Gemini backend requires a Gemini API key with Live API quota.
+- The local backend requires HOLOTLLOCAL running on this machine (a CUDA GPU
+  is strongly recommended) and translates to English only.
 
 ## License
 

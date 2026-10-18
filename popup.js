@@ -1,16 +1,24 @@
-// Popup: API key storage, start/stop, target language, silence gate, plus
-// two tabs — Appearance (live-applied overlay styling) and Debug (cost
-// meter + rolling event log). Offscreen broadcasts reach us directly.
+// Popup: backend choice (Gemini Live or the local HOLOTLLOCAL pipeline),
+// API key / server URL storage, start/stop, target language, silence gate,
+// plus tabs — Appearance (live-applied overlay styling), Detection, and
+// Debug (cost meter + rolling event log). Offscreen broadcasts reach us
+// directly.
 
 import {
+  DEFAULT_BACKEND,
+  DEFAULT_LOCAL_SERVER_URL,
   DEFAULT_TARGET_LANG,
   DEFAULT_APPEARANCE,
+  LOCAL_VAD_SETTINGS,
   VAD_SETTINGS,
 } from "./config.js";
 
 const $ = (id) => document.getElementById(id);
+const backendSelect = $("backend");
 const keyInput = $("api-key");
 const keySaved = $("key-saved");
+const urlInput = $("local-url");
+const urlSaved = $("url-saved");
 const langSelect = $("target-lang");
 const gateCheck = $("silence-gate");
 const startBtn = $("start");
@@ -32,8 +40,9 @@ const APPEARANCE_CONTROLS = {
 let appearance = { ...DEFAULT_APPEARANCE };
 
 // Detection (VAD/chunking) controls: element id → vadSettings key + how to
-// print the value. Stored as `vadSettings` and applied live to the running
-// chunker via background's storage.onChanged relay.
+// print the value. Stored per backend (Gemini streams short turns, the
+// local Whisper pipeline wants sentence-length utterances) and applied live
+// to the running chunker via background's storage.onChanged relay.
 const VAD_CONTROLS = {
   "vad-threshold": { key: "vadThreshold", fmt: (v) => v.toFixed(2) },
   "volume-threshold": { key: "volumeThreshold", fmt: (v) => v.toFixed(3) },
@@ -43,6 +52,9 @@ const VAD_CONTROLS = {
   "soft-cut-silence": { key: "softCutSilenceS", fmt: (v) => `${v.toFixed(2)}s` },
   "max-active": { key: "maxActiveS", fmt: (v) => `${v.toFixed(1)}s` },
 };
+const VAD_DEFAULTS = { gemini: VAD_SETTINGS, local: LOCAL_VAD_SETTINGS };
+const VAD_STORAGE_KEY = { gemini: "vadSettings", local: "localVadSettings" };
+let backend = DEFAULT_BACKEND;
 let vadSettings = { ...VAD_SETTINGS };
 
 init();
@@ -50,23 +62,26 @@ init();
 async function init() {
   const {
     apiKey = "",
+    backend: storedBackend = DEFAULT_BACKEND,
+    localServerUrl = DEFAULT_LOCAL_SERVER_URL,
     silenceGate = true,
     targetLang = DEFAULT_TARGET_LANG,
     totalUsd = 0,
     appearance: storedAppearance,
-    vadSettings: storedVad,
   } = await chrome.storage.local.get([
     "apiKey",
+    "backend",
+    "localServerUrl",
     "silenceGate",
     "targetLang",
     "totalUsd",
     "appearance",
-    "vadSettings",
   ]);
   if (apiKey) {
     keyInput.value = apiKey;
     keySaved.textContent = "key saved";
   }
+  urlInput.value = localServerUrl;
   gateCheck.checked = silenceGate;
   langSelect.value = targetLang;
   renderCost(0, totalUsd);
@@ -74,8 +89,9 @@ async function init() {
   appearance = { ...DEFAULT_APPEARANCE, ...(storedAppearance || {}) };
   renderAppearanceControls();
 
-  vadSettings = { ...VAD_SETTINGS, ...(storedVad || {}) };
-  renderVadControls();
+  backend = storedBackend;
+  renderBackend();
+  await loadVadSettings();
 
   const { debugLog = [] } = await chrome.storage.session.get("debugLog");
   renderLog(debugLog);
@@ -105,6 +121,38 @@ for (const tab of tabs) {
 $("save-key").addEventListener("click", async () => {
   await chrome.storage.local.set({ apiKey: keyInput.value.trim() });
   keySaved.textContent = keyInput.value.trim() ? "key saved" : "key cleared";
+});
+
+function renderBackend() {
+  backendSelect.value = backend;
+  $("gemini-settings").hidden = backend !== "gemini";
+  $("local-settings").hidden = backend !== "local";
+  // kotoba-whisper-bilingual and FuguMT are JA↔EN models.
+  $("lang-th").disabled = backend === "local";
+}
+
+backendSelect.addEventListener("change", async () => {
+  backend = backendSelect.value;
+  const updates = { backend };
+  if (backend === "local" && langSelect.value !== "en") {
+    langSelect.value = "en";
+    updates.targetLang = "en";
+  }
+  await chrome.storage.local.set(updates);
+  renderBackend();
+  await loadVadSettings();
+  if (!stopBtn.disabled) setStatus("backend change applies on the next Start");
+});
+
+$("save-url").addEventListener("click", async () => {
+  const url = urlInput.value.trim() || DEFAULT_LOCAL_SERVER_URL;
+  if (!/^wss?:\/\//.test(url)) {
+    urlSaved.textContent = "must start with ws:// or wss://";
+    return;
+  }
+  urlInput.value = url;
+  await chrome.storage.local.set({ localServerUrl: url });
+  urlSaved.textContent = "saved (applies on the next Start)";
 });
 
 langSelect.addEventListener("change", () => {
@@ -167,6 +215,13 @@ $("reset-appearance").addEventListener("click", () => {
 
 // ---- detection tab ----
 
+async function loadVadSettings() {
+  const key = VAD_STORAGE_KEY[backend];
+  const { [key]: stored } = await chrome.storage.local.get(key);
+  vadSettings = { ...VAD_DEFAULTS[backend], ...(stored || {}) };
+  renderVadControls();
+}
+
 function renderVadControls() {
   for (const [id, { key, fmt }] of Object.entries(VAD_CONTROLS)) {
     $(id).value = vadSettings[key];
@@ -180,14 +235,14 @@ for (const [id, { key }] of Object.entries(VAD_CONTROLS)) {
     renderVadControls();
     // background relays storage changes to the offscreen document, which
     // re-applies them to the running chunker — live, no reconnect.
-    chrome.storage.local.set({ vadSettings });
+    chrome.storage.local.set({ [VAD_STORAGE_KEY[backend]]: vadSettings });
   });
 }
 
 $("reset-vad").addEventListener("click", () => {
-  vadSettings = { ...VAD_SETTINGS };
+  vadSettings = { ...VAD_DEFAULTS[backend] };
   renderVadControls();
-  chrome.storage.local.set({ vadSettings });
+  chrome.storage.local.set({ [VAD_STORAGE_KEY[backend]]: vadSettings });
 });
 
 // ---- debug tab ----

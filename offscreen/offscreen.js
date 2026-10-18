@@ -1,10 +1,11 @@
 // Offscreen document: owns the tab-audio capture, the 16 kHz PCM pipeline,
 // the audible passthrough, the Silero VAD chunker (with an RMS silence-gate
-// fallback), the Gemini Live client, and the cost meter. Created/destroyed
-// by background.js.
+// fallback), the subtitle client — Gemini Live, or the local HOLOTLLOCAL
+// pipeline server — and the cost meter. Created/destroyed by background.js.
 
 import * as CFG from "../config.js";
 import { GeminiLiveClient } from "./gemini-client.js";
+import { LocalPipelineClient } from "./local-client.js";
 import { SileroVad, DynamicChunker } from "./vad.js";
 
 let client = null;
@@ -15,9 +16,11 @@ let workletNode = null;
 let running = false;
 
 let settings = {
+  backend: CFG.DEFAULT_BACKEND,
+  localServerUrl: CFG.DEFAULT_LOCAL_SERVER_URL,
   silenceGate: true,
   targetLang: CFG.DEFAULT_TARGET_LANG,
-  vadSettings: null, // popup overrides for CFG.VAD_SETTINGS
+  vadSettings: null, // popup overrides for the backend's VAD defaults
 };
 let apiKey = "";
 
@@ -30,7 +33,8 @@ function clampNum(v, def, lo, hi) {
 }
 
 function effectiveVadSettings() {
-  const d = CFG.VAD_SETTINGS;
+  const d =
+    settings.backend === "local" ? CFG.LOCAL_VAD_SETTINGS : CFG.VAD_SETTINGS;
   const s = settings.vadSettings || {};
   return {
     vadThreshold: clampNum(s.vadThreshold, d.vadThreshold, 0.05, 0.95),
@@ -65,6 +69,7 @@ let costTimer = null;
 let fakeTimer = null;
 
 function sessionUsd() {
+  if (settings.backend === "local") return 0; // runs on the user's own GPU
   return (sentSamples / 16000 / 60) * CFG.PRICE_PER_MIN;
 }
 
@@ -129,6 +134,18 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
     return;
   }
 
+  // Whisper needs utterance boundaries, so the local backend has no
+  // RMS-gate streaming fallback — check before capturing anything.
+  if (
+    settings.backend === "local" &&
+    !(CFG.USE_SILERO_VAD && (await getSileroVad()))
+  ) {
+    throw new Error(
+      "the local pipeline needs Silero VAD to cut utterances, and it " +
+        "isn't available (see the Debug tab)"
+    );
+  }
+
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -149,11 +166,21 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
   const vad = CFG.USE_SILERO_VAD ? await getSileroVad() : null;
   vadActive = vad !== null;
   if (vadActive) {
-    chunker = new DynamicChunker(vad, effectiveVadSettings(), {
-      onSpeechStart: onSpeechStart,
-      onSpeechFrame: queueSpeechFrame,
-      onSpeechEnd: onSpeechEnd,
-    });
+    chunker = new DynamicChunker(
+      vad,
+      effectiveVadSettings(),
+      settings.backend === "local"
+        ? {
+            onSpeechStart: onUtteranceStart,
+            onSpeechFrame: onUtteranceFrame,
+            onSpeechEnd: onUtteranceEnd,
+          }
+        : {
+            onSpeechStart: onSpeechStart,
+            onSpeechFrame: queueSpeechFrame,
+            onSpeechEnd: onSpeechEnd,
+          }
+    );
     chunker.reset();
   } else {
     chunker = null;
@@ -173,6 +200,10 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
 }
 
 function connectClient() {
+  if (settings.backend === "local") {
+    connectLocalClient();
+    return;
+  }
   const wantedManualActivity = CFG.MANUAL_ACTIVITY && vadActive;
   // The old client self-disables manualActivity after 2 sessions die before
   // any server message; carry that verdict into every future client.
@@ -215,6 +246,21 @@ function connectClient() {
   client.connect();
 }
 
+function connectLocalClient() {
+  client?.disconnect();
+  client = new LocalPipelineClient({
+    url: settings.localServerUrl || CFG.DEFAULT_LOCAL_SERVER_URL,
+    reconnectDelayMs: CFG.RECONNECT_DELAY_MS,
+    maxConsecutiveFailures: CFG.MAX_CONSECUTIVE_FAILURES,
+    onSubtitleUpdate: (payload) =>
+      broadcast({ action: "UPDATE_SUBTITLES", payload }),
+    onStatusChange: broadcastStatus,
+    onDebug: (line) => debugLog(line),
+  });
+  debugLog(`connecting: backend=local, url=${client.url}`);
+  client.connect();
+}
+
 function stop() {
   const wasRunning = running;
   running = false;
@@ -227,6 +273,7 @@ function stop() {
   chunker = null;
   batchFrames = [];
   speechBatch = [];
+  utterance = [];
   try {
     workletNode?.disconnect();
   } catch {}
@@ -253,8 +300,11 @@ function applySettings(s) {
     );
   }
   // The system instruction lives in the per-session setup message, so a
-  // language change needs a fresh session (~500 ms gap).
-  if (langChanged && running && client) connectClient();
+  // language change needs a fresh session (~500 ms gap). The local
+  // pipeline is English-only; there is nothing to switch.
+  if (langChanged && running && client && settings.backend !== "local") {
+    connectClient();
+  }
 }
 
 function onFrame(frame) {
@@ -314,6 +364,43 @@ function onSpeechEnd({ durationS, forced }) {
   );
 }
 
+// Local path: Whisper decodes whole utterances, so each VAD window is
+// buffered and sent to the pipeline server as one message when it closes.
+let utterance = [];
+
+function onUtteranceStart(frames) {
+  utterance = [...frames];
+}
+
+function onUtteranceFrame(frame) {
+  utterance.push(frame);
+}
+
+function onUtteranceEnd({ durationS, forced }) {
+  const frames = utterance;
+  utterance = [];
+  if (!running || !client) return;
+  const total = frames.reduce((n, f) => n + f.length, 0);
+  const audio = new Float32Array(total);
+  let off = 0;
+  for (const f of frames) {
+    audio.set(f, off);
+    off += f.length;
+  }
+  const pcm = floatToPcm16(audio);
+  if (client.sendUtterance(pcm.buffer)) {
+    sentSamples += pcm.length;
+    debugLog(
+      `utterance: ${durationS.toFixed(2)}s sent to the local pipeline` +
+        (forced ? " (max-length cut)" : "")
+    );
+  } else {
+    debugLog(
+      `utterance: ${durationS.toFixed(2)}s dropped — local pipeline not ready`
+    );
+  }
+}
+
 // No-VAD path: continuous 160 ms batches behind the RMS silence gate (the
 // pre-VAD behavior).
 function fallbackStream(frame) {
@@ -347,7 +434,7 @@ function fallbackStream(frame) {
   }
 }
 
-function floatToPcm16Base64(f32) {
+function floatToPcm16(f32) {
   const i16 = new Int16Array(f32.length);
   for (let i = 0; i < f32.length; i++) {
     let s = f32[i];
@@ -355,7 +442,11 @@ function floatToPcm16Base64(f32) {
     else if (s < -1) s = -1;
     i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
-  return arrayBufferToBase64(i16.buffer);
+  return i16;
+}
+
+function floatToPcm16Base64(f32) {
+  return arrayBufferToBase64(floatToPcm16(f32).buffer);
 }
 
 function arrayBufferToBase64(buffer) {
