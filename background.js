@@ -2,10 +2,19 @@
 // and relays subtitle/status messages from the offscreen document to the
 // captured tab's overlay (content scripts can't receive runtime broadcasts).
 
-import { DEBUG_FAKE_SUBTITLES, DEFAULT_TARGET_LANG } from "./config.js";
+import {
+  DEBUG_FAKE_SUBTITLES,
+  DEFAULT_BACKEND,
+  DEFAULT_LOCAL_SERVER_URL,
+  DEFAULT_TARGET_LANG,
+} from "./config.js";
 
 let activeTabId = null;
+let activeBackend = null;
 let running = false;
+
+// Each backend keeps its own Detection tuning (popup → Detection tab).
+const VAD_STORAGE_KEY = { gemini: "vadSettings", local: "localVadSettings" };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg?.action) {
@@ -53,18 +62,26 @@ async function startCapture(tabId) {
   if (!Number.isInteger(tabId)) throw new Error("No target tab");
   const {
     apiKey = "",
+    backend = DEFAULT_BACKEND,
+    localServerUrl = DEFAULT_LOCAL_SERVER_URL,
     silenceGate = true,
     targetLang = DEFAULT_TARGET_LANG,
     totalUsd = 0,
     vadSettings,
+    localVadSettings,
   } = await chrome.storage.local.get([
     "apiKey",
+    "backend",
+    "localServerUrl",
     "silenceGate",
     "targetLang",
     "totalUsd",
     "vadSettings",
+    "localVadSettings",
   ]);
-  if (!apiKey && !DEBUG_FAKE_SUBTITLES) {
+  // The local pipeline checks the language itself (Thai needs its Ollama
+  // engine) and reports a clear error over the socket.
+  if (backend !== "local" && !apiKey && !DEBUG_FAKE_SUBTITLES) {
     throw new Error("Save your Gemini API key first");
   }
 
@@ -93,14 +110,21 @@ async function startCapture(tabId) {
     action: "OFFSCREEN_START",
     streamId,
     apiKey,
-    settings: { silenceGate, targetLang, vadSettings },
+    settings: {
+      backend,
+      localServerUrl,
+      silenceGate,
+      targetLang,
+      vadSettings: backend === "local" ? localVadSettings : vadSettings,
+    },
     baseTotalUsd: totalUsd,
   });
   if (res && res.ok === false) throw new Error(res.error || "capture failed");
 
   activeTabId = tabId;
+  activeBackend = backend;
   running = true;
-  appendDebugLog(`capture started on tab ${tabId}`);
+  appendDebugLog(`capture started on tab ${tabId} (backend: ${backend})`);
 }
 
 async function stopCapture({ silent = false } = {}) {
@@ -126,6 +150,7 @@ async function stopCapture({ silent = false } = {}) {
     });
   }
   activeTabId = null;
+  activeBackend = null;
 }
 
 async function ensureOffscreenDocument() {
@@ -165,14 +190,16 @@ function relayToTab(msg) {
   });
 }
 
-// Live-applied settings (silence gate toggle, target language). API key
-// changes apply on the next Start.
+// Live-applied settings (silence gate toggle, target language, the running
+// backend's Detection tuning). API key, backend and server URL changes
+// apply on the next Start.
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== "local" || !running) return;
   const settings = {};
   if (changes.silenceGate) settings.silenceGate = changes.silenceGate.newValue;
   if (changes.targetLang) settings.targetLang = changes.targetLang.newValue;
-  if (changes.vadSettings) settings.vadSettings = changes.vadSettings.newValue;
+  const vadKey = VAD_STORAGE_KEY[activeBackend];
+  if (changes[vadKey]) settings.vadSettings = changes[vadKey].newValue;
   if (Object.keys(settings).length === 0) return;
   try {
     await chrome.runtime.sendMessage({

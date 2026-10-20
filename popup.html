@@ -27,6 +27,7 @@
         align-items: center;
       }
       input[type="password"],
+      input[type="text"],
       select {
         flex: 1;
         width: 100%;
@@ -45,7 +46,8 @@
         font-weight: 600;
         color: #fff;
       }
-      #save-key {
+      #save-key,
+      #save-url {
         background: #3b3b4a;
       }
       #start {
@@ -83,7 +85,8 @@
         gap: 8px;
         margin-top: 12px;
       }
-      #key-saved {
+      #key-saved,
+      #url-saved {
         color: #4ade80;
         font-size: 12px;
       }
@@ -186,12 +189,29 @@
   <body>
     <h1>HoloLiveTL Live</h1>
 
-    <label for="api-key">Gemini API key</label>
-    <div class="row">
-      <input id="api-key" type="password" placeholder="AIza…" autocomplete="off" />
-      <button id="save-key">Save</button>
+    <label for="backend">Backend</label>
+    <select id="backend">
+      <option value="gemini">Gemini Live API (cloud)</option>
+      <option value="local">Local pipeline (HOLOTLLOCAL)</option>
+    </select>
+
+    <div id="gemini-settings">
+      <label for="api-key">Gemini API key</label>
+      <div class="row">
+        <input id="api-key" type="password" placeholder="AIza…" autocomplete="off" />
+        <button id="save-key">Save</button>
+      </div>
+      <span id="key-saved"></span>
     </div>
-    <span id="key-saved"></span>
+
+    <div id="local-settings" hidden>
+      <label for="local-url">Local server</label>
+      <div class="row">
+        <input id="local-url" type="text" spellcheck="false" autocomplete="off" />
+        <button id="save-url">Save</button>
+      </div>
+      <span id="url-saved"></span>
+    </div>
 
     <label for="target-lang">Translate to</label>
     <select id="target-lang">
