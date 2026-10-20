@@ -102,7 +102,8 @@ export const VAD_SETTINGS = {
 // Subtitle backend, picked in the popup (applies on the next Start):
 //   "gemini"  the Gemini Live API (cloud, billed per audio minute, EN or TH)
 //   "local"   the HOLOTLLOCAL pipeline server on this machine — HoloLiveTL's
-//             kotoba-whisper + FuguMT on your own GPU; free, English only
+//             kotoba-whisper + FuguMT on your own GPU; free. English, or
+//             Thai when the server runs its Ollama translation engine
 export const DEFAULT_BACKEND = "gemini";
 export const DEFAULT_LOCAL_SERVER_URL = "ws://127.0.0.1:8765";
 

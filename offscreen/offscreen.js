@@ -250,6 +250,7 @@ function connectLocalClient() {
   client?.disconnect();
   client = new LocalPipelineClient({
     url: settings.localServerUrl || CFG.DEFAULT_LOCAL_SERVER_URL,
+    targetLang: settings.targetLang,
     reconnectDelayMs: CFG.RECONNECT_DELAY_MS,
     maxConsecutiveFailures: CFG.MAX_CONSECUTIVE_FAILURES,
     onSubtitleUpdate: (payload) =>
@@ -257,7 +258,9 @@ function connectLocalClient() {
     onStatusChange: broadcastStatus,
     onDebug: (line) => debugLog(line),
   });
-  debugLog(`connecting: backend=local, url=${client.url}`);
+  debugLog(
+    `connecting: backend=local, url=${client.url}, lang=${settings.targetLang}`
+  );
   client.connect();
 }
 
@@ -299,11 +302,12 @@ function applySettings(s) {
       `vad settings applied: ${JSON.stringify(effectiveVadSettings())}`
     );
   }
-  // The system instruction lives in the per-session setup message, so a
-  // language change needs a fresh session (~500 ms gap). The local
-  // pipeline is English-only; there is nothing to switch.
-  if (langChanged && running && client && settings.backend !== "local") {
-    connectClient();
+  // Gemini: the system instruction lives in the per-session setup message,
+  // so a language change needs a fresh session (~500 ms gap). Local: the
+  // server switches on a hello message over the open socket.
+  if (langChanged && running && client) {
+    if (settings.backend === "local") client.setTargetLang(settings.targetLang);
+    else connectClient();
   }
 }
 

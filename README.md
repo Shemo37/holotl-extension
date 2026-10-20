@@ -6,8 +6,9 @@ English or Thai translation as a draggable on-page overlay.
 
 A second, selectable backend sends the audio to
 [HOLOTLLOCAL](https://github.com/Shemo37/HOLOTLLOCAL) instead: the HoloLiveTL
-desktop app's pipeline (kotoba-whisper + FuguMT) running headless on your
-own GPU. It's free per minute, needs no API key, and is English only. See
+desktop app's pipeline (kotoba-whisper + FuguMT, or a local LLM via Ollama)
+running headless on your own GPU. It's free per minute and needs no API key.
+English by default; Thai needs the server's Ollama engine. See
 [Local pipeline backend](#local-pipeline-backend).
 
 No build step — plain JS, loaded unpacked.
@@ -89,7 +90,7 @@ machine instead of Gemini:
 
 ```
 tab audio → Silero VAD window (buffered, not streamed) → one PCM16 message
-  → ws://127.0.0.1:8765 → kotoba-whisper → filters → FuguMT → {jp, en} → overlay
+  → ws://127.0.0.1:8765 → kotoba-whisper → filters → FuguMT / Ollama → {jp, en} → overlay
 ```
 
 1. Install and start HOLOTLLOCAL (`StartServer.bat`, or `python server.py`)
@@ -106,8 +107,11 @@ Differences from the Gemini backend:
 - **Its own Detection defaults.** Pause 0.9 s, max 8 s, no breath-dip cut:
   the desktop app's dynamic-chunking values, because longer windows
   translate better. They're stored separately from the Gemini tuning.
-- **English only.** kotoba-whisper-bilingual and FuguMT are JA↔EN models,
-  so Thai is disabled while this backend is selected.
+- **Thai needs the server's Ollama engine.** kotoba-whisper-bilingual and
+  FuguMT are JA↔EN models. With `"translation_engine": "ollama"` in
+  HOLOTLLOCAL (a local LLM such as `qwen3:8b`), **Translate to: Thai** works
+  and can be switched mid-stream without reconnecting. Without it, picking
+  Thai stops with an error that says what to change.
 - **$0 cost** in the Debug tab. Audio seconds sent are still counted.
 - Backend, server URL and API key changes apply on the next **Start**.
 
@@ -210,7 +214,7 @@ Open the popup's **Debug tab** first — it answers most of these.
 - Restricted pages (`chrome://`, Web Store) can't render the overlay.
 - The Gemini backend requires a Gemini API key with Live API quota.
 - The local backend requires HOLOTLLOCAL running on this machine (a CUDA GPU
-  is strongly recommended) and translates to English only.
+  is strongly recommended). Thai additionally needs its Ollama engine.
 
 ## License
 

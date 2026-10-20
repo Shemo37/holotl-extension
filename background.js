@@ -79,15 +79,9 @@ async function startCapture(tabId) {
     "vadSettings",
     "localVadSettings",
   ]);
-  if (backend === "local") {
-    // kotoba-whisper-bilingual and FuguMT are JA↔EN models.
-    if (targetLang !== "en") {
-      throw new Error(
-        "The local pipeline translates to English only — pick English, " +
-          "or switch the backend to Gemini"
-      );
-    }
-  } else if (!apiKey && !DEBUG_FAKE_SUBTITLES) {
+  // The local pipeline checks the language itself (Thai needs its Ollama
+  // engine) and reports a clear error over the socket.
+  if (backend !== "local" && !apiKey && !DEBUG_FAKE_SUBTITLES) {
     throw new Error("Save your Gemini API key first");
   }
 

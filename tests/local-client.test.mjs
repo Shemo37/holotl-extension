@@ -67,7 +67,9 @@ test("loading → ready maps to connecting → connected; audio gated on ready",
   assert.equal(client.sendUtterance(new ArrayBuffer(4)), false);
   ws.message({ type: "status", status: "ready", message: "faster-whisper + fugumt" });
   assert.equal(client.sendUtterance(new ArrayBuffer(4)), true);
-  assert.equal(ws.sent.length, 1);
+  // hello on open, then the one utterance sent after "ready"
+  assert.equal(ws.sent.length, 2);
+  assert.ok(ws.sent[1] instanceof ArrayBuffer);
   assert.deepEqual(statuses, [
     ["connecting", undefined],
     ["connecting", "Loading ASR model..."],
@@ -161,4 +163,42 @@ test("malformed URL fails immediately instead of retrying", () => {
   assert.equal(sockets.length, 0);
   assert.equal(statuses.at(-1)[0], "error");
   assert.match(statuses.at(-1)[1], /Bad local server URL/);
+});
+
+test("hello with the target language goes out on open; setTargetLang resends it", () => {
+  const { client, sockets } = makeClient({ targetLang: "th" });
+  client.connect();
+  const ws = sockets[0];
+  client.setTargetLang("en"); // before open: nothing to send yet
+  assert.equal(ws.sent.length, 0);
+  ws.open();
+  assert.deepEqual(JSON.parse(ws.sent[0]), { type: "hello", target_lang: "en" });
+  client.setTargetLang("th"); // live switch, same socket
+  assert.deepEqual(JSON.parse(ws.sent[1]), { type: "hello", target_lang: "th" });
+  assert.equal(sockets.length, 1);
+});
+
+test("a reconnect re-sends hello with the current language", async () => {
+  const { client, sockets } = makeClient({ targetLang: "th" });
+  client.connect();
+  sockets[0].open();
+  sockets[0].serverClose(1006); // server restarted
+  await tick();
+  sockets[1].open();
+  assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", target_lang: "th" });
+});
+
+test("server refusing Thai (no Ollama engine) is a final error", async () => {
+  const { client, statuses, sockets } = makeClient({ targetLang: "th" });
+  client.connect();
+  sockets[0].open();
+  sockets[0].message({ type: "status", status: "ready", message: "faster-whisper + fugumt" });
+  sockets[0].message({
+    type: "error",
+    message: "Thai subtitles need the Ollama translator, but this server is translating with faster-whisper + fugumt",
+  });
+  await tick();
+  assert.equal(sockets.length, 1);
+  assert.equal(statuses.at(-1)[0], "error");
+  assert.match(statuses.at(-1)[1], /Thai subtitles need the Ollama translator/);
 });

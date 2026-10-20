@@ -1,6 +1,8 @@
 // WebSocket client for the HOLOTLLOCAL pipeline server: HoloLiveTL run
 // headless on the user's own GPU (kotoba-whisper ASR + filters + FuguMT /
-// DeepL). The wire protocol is defined in that repo's server.py:
+// DeepL / Ollama). The wire protocol is defined in that repo's server.py:
+//   → JSON    {type:"hello", target_lang:"en"|"th"} on open, and again
+//             to switch language (Thai needs the server's Ollama engine)
 //   → binary  one whole utterance, PCM16 little-endian mono 16 kHz
 //   ← JSON    {type:"status", status:"loading"|"ready", message}
 //             {type:"subtitle", id, jp, en, confidence}
@@ -17,6 +19,7 @@ export class LocalPipelineClient {
   /**
    * @param {object} opts
    * @param {string} opts.url                    e.g. "ws://127.0.0.1:8765"
+   * @param {string} [opts.targetLang]           "en" (default) or "th"
    * @param {number} opts.reconnectDelayMs
    * @param {number} opts.maxConsecutiveFailures connection attempts that never
    *   open, in a row, before giving up with an "error" status
@@ -27,6 +30,7 @@ export class LocalPipelineClient {
    */
   constructor(opts) {
     this.url = opts.url;
+    this.targetLang = opts.targetLang || "en";
     this.reconnectDelayMs = opts.reconnectDelayMs ?? 500;
     this.maxConsecutiveFailures = opts.maxConsecutiveFailures ?? 10;
     this.onSubtitleUpdate = opts.onSubtitleUpdate || (() => {});
@@ -66,6 +70,7 @@ export class LocalPipelineClient {
       this._opened = true;
       this.consecutiveFailures = 0;
       this.onDebug(`local pipeline socket open (${this.url})`);
+      this._sendHello();
     };
 
     ws.onmessage = (event) => {
@@ -155,6 +160,17 @@ export class LocalPipelineClient {
     }
     this.ws.send(pcm16Buffer);
     return true;
+  }
+
+  /** Switch the translation language on the live session (no reconnect). */
+  setTargetLang(lang) {
+    this.targetLang = lang;
+    this._sendHello();
+  }
+
+  _sendHello() {
+    if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return;
+    this.ws.send(JSON.stringify({ type: "hello", target_lang: this.targetLang }));
   }
 
   disconnect() {

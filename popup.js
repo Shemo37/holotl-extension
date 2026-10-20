@@ -127,18 +127,11 @@ function renderBackend() {
   backendSelect.value = backend;
   $("gemini-settings").hidden = backend !== "gemini";
   $("local-settings").hidden = backend !== "local";
-  // kotoba-whisper-bilingual and FuguMT are JA↔EN models.
-  $("lang-th").disabled = backend === "local";
 }
 
 backendSelect.addEventListener("change", async () => {
   backend = backendSelect.value;
-  const updates = { backend };
-  if (backend === "local" && langSelect.value !== "en") {
-    langSelect.value = "en";
-    updates.targetLang = "en";
-  }
-  await chrome.storage.local.set(updates);
+  await chrome.storage.local.set({ backend });
   renderBackend();
   await loadVadSettings();
   if (!stopBtn.disabled) setStatus("backend change applies on the next Start");
