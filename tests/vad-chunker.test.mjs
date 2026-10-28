@@ -27,7 +27,7 @@ const loudFrame = () => new Float32Array(512).fill(0.5); // peak > 0.1
 function makeChunker(vad = null, settings = SETTINGS) {
   const events = [];
   const chunker = new DynamicChunker(vad, settings, {
-    onSpeechStart: (frames) => events.push({ type: "start", frames }),
+    onSpeechStart: (frames, meta) => events.push({ type: "start", frames, meta }),
     onSpeechFrame: (frame) => events.push({ type: "frame", frame }),
     onSpeechEnd: (meta) => events.push({ type: "end", meta }),
   });
@@ -188,4 +188,31 @@ test("loud frames halve the VAD threshold (shrieks count as speech)", async () =
 
   assert.equal(events.filter((e) => e.type === "start").length, 1);
   assert.equal(events.filter((e) => e.type === "end").length, 1);
+});
+
+test("window events carry sample positions for subtitle timestamps", async () => {
+  const { chunker, events } = makeChunker();
+  // frames 0-19 silent, 20-59 speech, 60-84 silent
+  await push(chunker, [
+    ...Array.from({ length: 20 }, silentFrame),
+    ...Array.from({ length: 40 }, speechFrame),
+    ...Array.from({ length: 25 }, silentFrame),
+  ]);
+  const start = events.find((e) => e.type === "start");
+  const end = events.find((e) => e.type === "end");
+  // 10-frame pre-roll ending at the first speech frame (20) → frame 11
+  assert.equal(start.frames.length, 10);
+  assert.equal(start.meta.startSample, 11 * 512);
+  // closes on the 22nd silent frame (81); speech itself ended at frame 60
+  assert.equal(end.meta.endSample, 82 * 512);
+  assert.equal(end.meta.speechEndSample, 60 * 512);
+
+  // reset() restarts the clock for the next session
+  chunker.reset();
+  await push(chunker, [
+    ...Array.from({ length: 5 }, speechFrame),
+    ...Array.from({ length: 25 }, silentFrame),
+  ]);
+  const second = events.filter((e) => e.type === "start")[1];
+  assert.equal(second.meta.startSample, 0);
 });

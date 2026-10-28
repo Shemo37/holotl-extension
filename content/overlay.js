@@ -113,11 +113,33 @@
     msgEl.textContent = status === "error" ? message || "error" : "";
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  // The subtitle file is timed against this page's video: the playing one,
+  // else the largest.
+  function mainVideo() {
+    let best = null;
+    let bestArea = 0;
+    for (const v of document.querySelectorAll("video")) {
+      const r = v.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (!v.paused && area > 0) return v;
+      if (area > bestArea) {
+        best = v;
+        bestArea = area;
+      }
+    }
+    return best;
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.action === "UPDATE_SUBTITLES") {
       showSubtitles(msg.payload?.jp, msg.payload?.en);
     } else if (msg?.action === "STATUS_UPDATE") {
       showStatus(msg.payload?.status, msg.payload?.message);
+    } else if (msg?.action === "GET_VIDEO_TIME") {
+      const v = mainVideo();
+      sendResponse(
+        v ? { time: v.currentTime, paused: v.paused, rate: v.playbackRate } : null
+      );
     }
   });
 

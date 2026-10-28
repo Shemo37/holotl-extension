@@ -4,6 +4,13 @@ Chrome MV3 extension that streams tab audio to the **Gemini Multimodal Live
 API over WebSockets** and renders real-time Japanese subtitles with an
 English or Thai translation as a draggable on-page overlay.
 
+A second, selectable backend sends the audio to
+[HOLOTLLOCAL](https://github.com/Shemo37/HOLOTLLOCAL) instead: the HoloLiveTL
+desktop app's pipeline (kotoba-whisper + FuguMT, or a local LLM via Ollama)
+running headless on your own GPU. It's free per minute and needs no API key.
+English by default; Thai needs the server's Ollama engine. See
+[Local pipeline backend](#local-pipeline-backend).
+
 No build step — plain JS, loaded unpacked.
 
 > An earlier chunk-based engine (Silero VAD → WAV chunks → one
@@ -31,6 +38,11 @@ tab audio ─tabCapture─▶ offscreen document
 - `offscreen/offscreen.js` — audio pipeline, silence gate, cost meter.
 - `offscreen/gemini-client.js` — **all Live wire-schema knowledge** (setup,
   audio frames, response parsing, reconnect).
+- `offscreen/local-client.js` — client for the HOLOTLLOCAL pipeline server
+  (sends one id-tagged PCM16 message per utterance, reads `{jp, en}` back).
+- `offscreen/cue-timer.js` — times each speech window against the page
+  video for the subtitle file.
+- `srt.js` — builds the `.srt` from the recorded cues.
 - `offscreen/pcm-worklet.js` — 16 kHz Float32→PCM16 chunker with RMS.
 - `content/overlay.js` + `content/overlay.css` — the injected subtitle
   overlay.
@@ -45,9 +57,12 @@ tab audio ─tabCapture─▶ offscreen document
    `chrome.storage.local`. **Never commit it, and never publish a build of
    this extension with a key embedded — anyone could extract and bill it.**
 
-All settings live in `chrome.storage.local` under `apiKey`, `targetLang`,
-`silenceGate`, `appearance`, and `totalUsd` (all-time spend) — removing the
-extension clears all of them, key included.
+All settings live in `chrome.storage.local` under `backend`, `apiKey`,
+`localServerUrl`, `targetLang`, `silenceGate`, `appearance`, `vadSettings` /
+`localVadSettings` (Detection tuning per backend), and `totalUsd` (all-time
+spend), next to the last session's subtitle file log (`subtitleLog`,
+`subtitleLogStartedAt`). Removing the extension clears all of them, key
+included.
 
 ## Use
 
@@ -71,6 +86,65 @@ The popup has two tabs:
 
 Changing the translation language while running reconnects the Live session
 (~0.5 s gap) — the language lives in the session's system instruction.
+
+## Subtitle file (.srt)
+
+Every subtitle is also recorded with its timing. After **Stop**, the
+popup's **Download subtitles (.srt)** button saves the session as
+`holotl-YYYY-MM-DD-HHMM.srt` (named from when you pressed Start), one cue per
+subtitle, Japanese above the translation. Load it in VLC/MPC next to the
+archive, or in an editor.
+
+- **Timing follows the page's video position**, so the file lines up with
+  the VOD/archive even if you paused or seeked. Each cue runs from the start
+  of its VAD speech window (including ~0.3 s of pre-roll) to where the
+  speech ended (the 0.9 s end-of-speech pause is cut off). Short lines get
+  at least 1 s; a cue ends where the next one begins.
+- **Local backend: exact pairing.** Each utterance goes to the server with an
+  id that comes back on its subtitle.
+- **Gemini backend: per-window pairing.** A subtitle belongs to the newest
+  speech window when it arrives. Usually right; approximate when Gemini
+  returns nothing for a window or answers one late.
+- The log lives in `chrome.storage.local`, so closing the popup or the
+  browser keeps it. **The next Start clears it**: download first.
+- If the page has no `<video>` (or it's inside an iframe), timestamps fall
+  back to time since Start and the Debug log says so.
+
+## Local pipeline backend
+
+Popup → **Backend: Local pipeline (HOLOTLLOCAL)** sends audio to the
+[HOLOTLLOCAL](https://github.com/Shemo37/HOLOTLLOCAL) server on this
+machine instead of Gemini:
+
+```
+tab audio → Silero VAD window (buffered, not streamed) → one PCM16 message
+  → ws://127.0.0.1:8765 → kotoba-whisper → filters → FuguMT / Ollama → {jp, en} → overlay
+```
+
+1. Install and start HOLOTLLOCAL (`StartServer.bat`, or `python server.py`)
+   and wait for `Pipeline ready`. It must be running **before** Start.
+2. Popup → Backend → **Local pipeline**. Change **Local server** only if you
+   started the server with a different `--port`.
+3. **Start** as usual.
+
+Differences from the Gemini backend:
+
+- **Whole utterances.** Whisper can't translate mid-sentence, so each VAD
+  window is sent when it closes. A subtitle lands about one decode after the
+  speaker pauses, not while they talk.
+- **Its own Detection defaults.** Pause 0.9 s, max 8 s, no breath-dip cut:
+  the desktop app's dynamic-chunking values, because longer windows
+  translate better. They're stored separately from the Gemini tuning.
+- **Thai needs the server's Ollama engine.** kotoba-whisper-bilingual and
+  FuguMT are JA↔EN models. With `"translation_engine": "ollama"` in
+  HOLOTLLOCAL (a local LLM such as `qwen3:8b`), **Translate to: Thai** works
+  and can be switched mid-stream without reconnecting. Without it, picking
+  Thai stops with an error that says what to change.
+- **$0 cost** in the Debug tab. Audio seconds sent are still counted.
+- Backend, server URL and API key changes apply on the next **Start**.
+
+The server accepts only `chrome-extension://` origins, so web pages can't
+use it. Its README covers pinning your exact extension ID.
 
 ## Model
 
@@ -152,13 +226,26 @@ Open the popup's **Debug tab** first — it answers most of these.
   document crashed); Stop, reload the tab, Start again.
 - **Amber dot every ~15 minutes** — normal; that's the Live session limit
   rollover (see above).
+- **Local: "Local pipeline server not reachable"** — HOLOTLLOCAL isn't
+  running, or it's on another port. Start it, wait for `Pipeline ready`,
+  then Start again.
+- **Local: amber dot, popup says "connecting: Loading ASR model..."** — the
+  server is still loading models (the first run downloads them). Speech in
+  that window is dropped; subtitles start once it reports ready.
+- **Local: "Another client connected…"** — the server serves one client at
+  a time and a second browser/profile took over. Stop that one.
 
 ## Limitations
 
 - Chrome/Chromium only (`chrome.tabCapture` + offscreen documents).
 - DRM-protected tabs (Netflix etc.) capture silence.
 - Restricted pages (`chrome://`, Web Store) can't render the overlay.
-- Requires a Gemini API key with Live API quota.
+- The Gemini backend requires a Gemini API key with Live API quota.
+- The local backend requires HOLOTLLOCAL running on this machine (a CUDA GPU
+  is strongly recommended). Thai additionally needs its Ollama engine.
+- Subtitle file timing on a live stream uses the player's position, which
+  may not match the archive's timeline (it does for VODs/archives). During
+  YouTube ads, the ad's own position is used.
 
 ## License
 
