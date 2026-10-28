@@ -3,9 +3,10 @@
 // DeepL / Ollama). The wire protocol is defined in that repo's server.py:
 //   → JSON    {type:"hello", target_lang:"en"|"th"} on open, and again
 //             to switch language (Thai needs the server's Ollama engine)
-//   → binary  one whole utterance, PCM16 little-endian mono 16 kHz
+//   → binary  one whole utterance: 4-byte little-endian uint32 utterance
+//             id, then PCM16 little-endian mono 16 kHz
 //   ← JSON    {type:"status", status:"loading"|"ready", message}
-//             {type:"subtitle", id, jp, en, confidence}
+//             {type:"subtitle", id, utterance_id, jp, en, confidence}
 //             {type:"error", message}   fatal; the server exits after it
 //
 // Whisper decodes whole utterances, so unlike the Gemini Live path nothing
@@ -23,7 +24,9 @@ export class LocalPipelineClient {
    * @param {number} opts.reconnectDelayMs
    * @param {number} opts.maxConsecutiveFailures connection attempts that never
    *   open, in a row, before giving up with an "error" status
-   * @param {(sub: {jp: string, en: string}) => void} opts.onSubtitleUpdate
+   * @param {(sub: {jp: string, en: string, utteranceId: ?number}) => void}
+   *   opts.onSubtitleUpdate  utteranceId echoes sendUtterance's id (null
+   *   from servers that predate it)
    * @param {(status: string, message?: string) => void} opts.onStatusChange
    * @param {(line: string) => void} [opts.onDebug]
    * @param {typeof WebSocket} [opts.WebSocketImpl]  injectable for tests
@@ -142,7 +145,11 @@ export class LocalPipelineClient {
         }
         return;
       case "subtitle":
-        this.onSubtitleUpdate({ jp: msg.jp || "", en: msg.en || "" });
+        this.onSubtitleUpdate({
+          jp: msg.jp || "",
+          en: msg.en || "",
+          utteranceId: Number.isInteger(msg.utterance_id) ? msg.utterance_id : null,
+        });
         return;
       case "error":
         this._fail(`Local pipeline: ${msg.message}`);
@@ -152,13 +159,17 @@ export class LocalPipelineClient {
     }
   }
 
-  /** Send one whole utterance (ArrayBuffer of PCM16 LE @ 16 kHz). Returns
-   * true if sent; false while disconnected or the models are loading. */
-  sendUtterance(pcm16Buffer) {
+  /** Send one whole utterance (ArrayBuffer of PCM16 LE @ 16 kHz) tagged
+   * with utteranceId, which comes back on its subtitle. Returns true if
+   * sent; false while disconnected or the models are loading. */
+  sendUtterance(pcm16Buffer, utteranceId = 0) {
     if (!this.ready || !this.ws || this.ws.readyState !== 1 /* OPEN */) {
       return false;
     }
-    this.ws.send(pcm16Buffer);
+    const message = new Uint8Array(4 + pcm16Buffer.byteLength);
+    new DataView(message.buffer).setUint32(0, utteranceId >>> 0, true);
+    message.set(new Uint8Array(pcm16Buffer), 4);
+    this.ws.send(message.buffer);
     return true;
   }
 

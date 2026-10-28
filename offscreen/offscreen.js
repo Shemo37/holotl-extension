@@ -7,6 +7,7 @@ import * as CFG from "../config.js";
 import { GeminiLiveClient } from "./gemini-client.js";
 import { LocalPipelineClient } from "./local-client.js";
 import { SileroVad, DynamicChunker } from "./vad.js";
+import { CueTimer } from "./cue-timer.js";
 
 let client = null;
 let mediaStream = null;
@@ -68,6 +69,15 @@ let baseTotalUsd = 0; // all-time total persisted before this session began
 let costTimer = null;
 let fakeTimer = null;
 
+// Subtitle file (popup → Download subtitles): cues timed against the page
+// video; background keeps the session's log.
+const cueTimer = new CueTimer({
+  getVideoTime: () => chrome.runtime.sendMessage({ action: "GET_VIDEO_TIME" }),
+  onCue: (cue) => broadcast({ action: "SUBTITLE_CUE", cue }),
+  onNoVideo: () =>
+    debugLog("subtitle file: no <video> found — timestamps use time since Start"),
+});
+
 function sessionUsd() {
   if (settings.backend === "local") return 0; // runs on the user's own GPU
   return (sentSamples / 16000 / 60) * CFG.PRICE_PER_MIN;
@@ -121,6 +131,7 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
   apiKey = key || "";
   settings = { ...settings, ...s };
   sentSamples = 0;
+  cueTimer.reset();
   sessionStartedAt = Date.now();
   lastLoudAt = Date.now();
   batchFrames = [];
@@ -165,6 +176,9 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
 
   const vad = CFG.USE_SILERO_VAD ? await getSileroVad() : null;
   vadActive = vad !== null;
+  if (!vadActive) {
+    debugLog("subtitle file: no VAD windows to time — this session records no lines");
+  }
   if (vadActive) {
     chunker = new DynamicChunker(
       vad,
@@ -225,8 +239,12 @@ function connectClient() {
     reconnectDelayMs: CFG.RECONNECT_DELAY_MS,
     maxConsecutiveFailures: CFG.MAX_CONSECUTIVE_FAILURES,
     debug: CFG.DEBUG,
-    onSubtitleUpdate: (payload) =>
-      broadcast({ action: "UPDATE_SUBTITLES", payload }),
+    onSubtitleUpdate: (payload) => {
+      broadcast({ action: "UPDATE_SUBTITLES", payload });
+      // Approximate: a Gemini turn lands while its window is still the
+      // newest (flushTurn runs before the next window is numbered).
+      cueTimer.recordCue(cueTimer.latestSeq, payload);
+    },
     onStatusChange: (status, message) => {
       // A reconnect (15-min session limit) can land mid-sentence: the new
       // session needs its own activityStart or window audio is ignored.
@@ -253,8 +271,11 @@ function connectLocalClient() {
     targetLang: settings.targetLang,
     reconnectDelayMs: CFG.RECONNECT_DELAY_MS,
     maxConsecutiveFailures: CFG.MAX_CONSECUTIVE_FAILURES,
-    onSubtitleUpdate: (payload) =>
-      broadcast({ action: "UPDATE_SUBTITLES", payload }),
+    onSubtitleUpdate: (payload) => {
+      broadcast({ action: "UPDATE_SUBTITLES", payload });
+      // Exact: the server echoes the id each utterance was sent with.
+      cueTimer.recordCue(payload.utteranceId ?? cueTimer.latestSeq, payload);
+    },
     onStatusChange: broadcastStatus,
     onDebug: (line) => debugLog(line),
   });
@@ -313,6 +334,7 @@ function applySettings(s) {
 
 function onFrame(frame) {
   if (!running || !client) return;
+  cueTimer.addSamples(frame.length);
   if (chunker) {
     chunker.push(frame); // Silero decides; speech windows stream live
     return;
@@ -326,11 +348,12 @@ function onFrame(frame) {
 const SPEECH_BATCH_FRAMES = 3;
 let speechBatch = [];
 
-function onSpeechStart(frames) {
+function onSpeechStart(frames, { startSample }) {
   if (!running || !client) return;
   // New utterance: pair up and display whatever the previous window left
   // pending (covers models that never send a turn marker).
   client.flushTurn();
+  cueTimer.beginWindow(startSample);
   client.startActivity();
   speechBatch = [];
   for (const f of frames) queueSpeechFrame(f);
@@ -358,8 +381,9 @@ function flushSpeechBatch() {
   }
 }
 
-function onSpeechEnd({ durationS, forced }) {
+function onSpeechEnd({ durationS, forced, speechEndSample }) {
   if (!client) return;
+  cueTimer.endWindow(cueTimer.latestSeq, speechEndSample);
   flushSpeechBatch();
   client.endActivity();
   debugLog(
@@ -371,18 +395,21 @@ function onSpeechEnd({ durationS, forced }) {
 // Local path: Whisper decodes whole utterances, so each VAD window is
 // buffered and sent to the pipeline server as one message when it closes.
 let utterance = [];
+let utteranceSeq = 0;
 
-function onUtteranceStart(frames) {
+function onUtteranceStart(frames, { startSample }) {
   utterance = [...frames];
+  utteranceSeq = cueTimer.beginWindow(startSample);
 }
 
 function onUtteranceFrame(frame) {
   utterance.push(frame);
 }
 
-function onUtteranceEnd({ durationS, forced }) {
+function onUtteranceEnd({ durationS, forced, speechEndSample }) {
   const frames = utterance;
   utterance = [];
+  cueTimer.endWindow(utteranceSeq, speechEndSample);
   if (!running || !client) return;
   const total = frames.reduce((n, f) => n + f.length, 0);
   const audio = new Float32Array(total);
@@ -392,7 +419,7 @@ function onUtteranceEnd({ durationS, forced }) {
     off += f.length;
   }
   const pcm = floatToPcm16(audio);
-  if (client.sendUtterance(pcm.buffer)) {
+  if (client.sendUtterance(pcm.buffer, utteranceSeq)) {
     sentSamples += pcm.length;
     debugLog(
       `utterance: ${durationS.toFixed(2)}s sent to the local pipeline` +

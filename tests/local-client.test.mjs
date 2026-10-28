@@ -81,11 +81,11 @@ test("subtitles become {jp, en} with nulls as empty lines", () => {
   const { client, subs, sockets } = makeClient();
   client.connect();
   sockets[0].open();
-  sockets[0].message({ type: "subtitle", id: 1, jp: "みなさん", en: "Everyone", confidence: 0.9 });
+  sockets[0].message({ type: "subtitle", id: 1, utterance_id: 7, jp: "みなさん", en: "Everyone", confidence: 0.9 });
   sockets[0].message({ type: "subtitle", id: 2, jp: null, en: "EN only", confidence: 0.8 });
   assert.deepEqual(subs, [
-    { jp: "みなさん", en: "Everyone" },
-    { jp: "", en: "EN only" },
+    { jp: "みなさん", en: "Everyone", utteranceId: 7 },
+    { jp: "", en: "EN only", utteranceId: null }, // older server: no id
   ]);
 });
 
@@ -201,4 +201,17 @@ test("server refusing Thai (no Ollama engine) is a final error", async () => {
   assert.equal(sockets.length, 1);
   assert.equal(statuses.at(-1)[0], "error");
   assert.match(statuses.at(-1)[1], /Thai subtitles need the Ollama translator/);
+});
+
+test("each utterance goes out as a 4-byte LE id + the PCM16 bytes", () => {
+  const { client, sockets } = makeClient();
+  client.connect();
+  const ws = sockets[0];
+  ws.open();
+  ws.message({ type: "status", status: "ready", message: "x" });
+  const pcm = new Int16Array([1000, -2000, 3000]);
+  assert.equal(client.sendUtterance(pcm.buffer, 258), true);
+  const sent = new Uint8Array(ws.sent.at(-1));
+  assert.equal(new DataView(sent.buffer).getUint32(0, true), 258);
+  assert.deepEqual([...new Int16Array(sent.buffer.slice(4))], [1000, -2000, 3000]);
 });

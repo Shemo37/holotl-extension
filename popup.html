@@ -47,7 +47,8 @@
         color: #fff;
       }
       #save-key,
-      #save-url {
+      #save-url,
+      #download-srt {
         background: #3b3b4a;
       }
       #start {
@@ -230,6 +231,11 @@
     </div>
 
     <div id="status"></div>
+
+    <div class="row" id="subs-row">
+      <button id="download-srt" disabled>Download subtitles (.srt)</button>
+      <span id="subs-count"></span>
+    </div>
 
     <div class="tabbar">
       <button id="tab-btn-appearance" class="active">Appearance</button>

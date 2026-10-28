@@ -43,6 +43,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case "DEBUG_LOG":
       appendDebugLog(msg.payload?.line);
       return;
+    case "GET_VIDEO_TIME":
+      // Offscreen can't reach tabs; ask the overlay for the video position.
+      if (activeTabId === null) {
+        sendResponse(null);
+        return;
+      }
+      chrome.tabs
+        .sendMessage(activeTabId, { action: "GET_VIDEO_TIME" })
+        .then(sendResponse, () => sendResponse(null));
+      return true;
+    case "SUBTITLE_CUE":
+      appendCue(msg.cue);
+      return;
     case "STATUS_UPDATE":
       relayToTab(msg);
       appendDebugLog(
@@ -124,6 +137,7 @@ async function startCapture(tabId) {
   activeTabId = tabId;
   activeBackend = backend;
   running = true;
+  resetSubtitleLog();
   appendDebugLog(`capture started on tab ${tabId} (backend: ${backend})`);
 }
 
@@ -181,6 +195,34 @@ function appendDebugLog(line) {
       debugLog: debugLog.slice(-DEBUG_LOG_MAX),
     });
   });
+}
+
+// Subtitle file log (popup → Download subtitles). Kept in
+// chrome.storage.local so it outlives the offscreen document and the
+// popup; each Start begins a new log. Serialized like the debug log.
+let cueChain = Promise.resolve();
+function resetSubtitleLog() {
+  cueChain = cueChain.then(() =>
+    chrome.storage.local.set({ subtitleLog: [], subtitleLogStartedAt: Date.now() })
+  );
+}
+function appendCue(cue) {
+  if (!cue) return;
+  cueChain = cueChain
+    .then(async () => {
+      const { subtitleLog = [] } = await chrome.storage.local.get("subtitleLog");
+      // Gemini can deliver one window's turn in two pieces, and cues can
+      // land out of order (each waits for its own window's end time).
+      const same = subtitleLog.findLast((c) => c.seq === cue.seq);
+      if (same) {
+        same.jp = [same.jp, cue.jp].filter(Boolean).join(" ");
+        same.en = [same.en, cue.en].filter(Boolean).join(" ");
+      } else {
+        subtitleLog.push(cue);
+      }
+      await chrome.storage.local.set({ subtitleLog });
+    })
+    .catch((e) => appendDebugLog(`subtitle file write failed: ${e.message || e}`));
 }
 
 function relayToTab(msg) {

@@ -39,7 +39,10 @@ tab audio ─tabCapture─▶ offscreen document
 - `offscreen/gemini-client.js` — **all Live wire-schema knowledge** (setup,
   audio frames, response parsing, reconnect).
 - `offscreen/local-client.js` — client for the HOLOTLLOCAL pipeline server
-  (sends one PCM16 message per utterance, reads `{jp, en}` back).
+  (sends one id-tagged PCM16 message per utterance, reads `{jp, en}` back).
+- `offscreen/cue-timer.js` — times each speech window against the page
+  video for the subtitle file.
+- `srt.js` — builds the `.srt` from the recorded cues.
 - `offscreen/pcm-worklet.js` — 16 kHz Float32→PCM16 chunker with RMS.
 - `content/overlay.js` + `content/overlay.css` — the injected subtitle
   overlay.
@@ -57,7 +60,9 @@ tab audio ─tabCapture─▶ offscreen document
 All settings live in `chrome.storage.local` under `backend`, `apiKey`,
 `localServerUrl`, `targetLang`, `silenceGate`, `appearance`, `vadSettings` /
 `localVadSettings` (Detection tuning per backend), and `totalUsd` (all-time
-spend). Removing the extension clears all of them, key included.
+spend), next to the last session's subtitle file log (`subtitleLog`,
+`subtitleLogStartedAt`). Removing the extension clears all of them, key
+included.
 
 ## Use
 
@@ -81,6 +86,29 @@ The popup has two tabs:
 
 Changing the translation language while running reconnects the Live session
 (~0.5 s gap) — the language lives in the session's system instruction.
+
+## Subtitle file (.srt)
+
+Every subtitle is also recorded with its timing. After **Stop**, the
+popup's **Download subtitles (.srt)** button saves the session as
+`holotl-YYYY-MM-DD-HHMM.srt` (named from when you pressed Start), one cue per
+subtitle, Japanese above the translation. Load it in VLC/MPC next to the
+archive, or in an editor.
+
+- **Timing follows the page's video position**, so the file lines up with
+  the VOD/archive even if you paused or seeked. Each cue runs from the start
+  of its VAD speech window (including ~0.3 s of pre-roll) to where the
+  speech ended (the 0.9 s end-of-speech pause is cut off). Short lines get
+  at least 1 s; a cue ends where the next one begins.
+- **Local backend: exact pairing.** Each utterance goes to the server with an
+  id that comes back on its subtitle.
+- **Gemini backend: per-window pairing.** A subtitle belongs to the newest
+  speech window when it arrives. Usually right; approximate when Gemini
+  returns nothing for a window or answers one late.
+- The log lives in `chrome.storage.local`, so closing the popup or the
+  browser keeps it. **The next Start clears it**: download first.
+- If the page has no `<video>` (or it's inside an iframe), timestamps fall
+  back to time since Start and the Debug log says so.
 
 ## Local pipeline backend
 
@@ -215,6 +243,9 @@ Open the popup's **Debug tab** first — it answers most of these.
 - The Gemini backend requires a Gemini API key with Live API quota.
 - The local backend requires HOLOTLLOCAL running on this machine (a CUDA GPU
   is strongly recommended). Thai additionally needs its Ollama engine.
+- Subtitle file timing on a live stream uses the player's position, which
+  may not match the archive's timeline (it does for VODs/archives). During
+  YouTube ads, the ad's own position is used.
 
 ## License
 

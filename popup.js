@@ -12,6 +12,7 @@ import {
   LOCAL_VAD_SETTINGS,
   VAD_SETTINGS,
 } from "./config.js";
+import { buildSrt, srtFilename } from "./srt.js";
 
 const $ = (id) => document.getElementById(id);
 const backendSelect = $("backend");
@@ -92,6 +93,7 @@ async function init() {
   backend = storedBackend;
   renderBackend();
   await loadVadSettings();
+  await renderSubtitleLog();
 
   const { debugLog = [] } = await chrome.storage.session.get("debugLog");
   renderLog(debugLog);
@@ -236,6 +238,36 @@ $("reset-vad").addEventListener("click", () => {
   vadSettings = { ...VAD_DEFAULTS[backend] };
   renderVadControls();
   chrome.storage.local.set({ [VAD_STORAGE_KEY[backend]]: vadSettings });
+});
+
+// ---- subtitle file ----
+
+async function renderSubtitleLog() {
+  const { subtitleLog = [] } = await chrome.storage.local.get("subtitleLog");
+  $("subs-count").textContent = subtitleLog.length
+    ? `${subtitleLog.length} lines`
+    : "no lines yet";
+  $("download-srt").disabled = subtitleLog.length === 0;
+}
+
+$("download-srt").addEventListener("click", async () => {
+  const { subtitleLog = [], subtitleLogStartedAt = Date.now() } =
+    await chrome.storage.local.get(["subtitleLog", "subtitleLogStartedAt"]);
+  // BOM: Windows players otherwise misread UTF-8 Japanese/Thai.
+  const blob = new Blob(["\ufeff" + buildSrt(subtitleLog)], {
+    type: "application/x-subrip",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = srtFilename(subtitleLogStartedAt);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+});
+
+// Lines arrive while the popup is open; Start clears the log.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.subtitleLog) renderSubtitleLog();
 });
 
 // ---- debug tab ----
