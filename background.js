@@ -2,10 +2,19 @@
 // and relays subtitle/status messages from the offscreen document to the
 // captured tab's overlay (content scripts can't receive runtime broadcasts).
 
-import { DEBUG_FAKE_SUBTITLES, DEFAULT_TARGET_LANG } from "./config.js";
+import {
+  DEBUG_FAKE_SUBTITLES,
+  DEFAULT_BACKEND,
+  DEFAULT_LOCAL_SERVER_URL,
+  DEFAULT_TARGET_LANG,
+} from "./config.js";
 
 let activeTabId = null;
+let activeBackend = null;
 let running = false;
+
+// Each backend keeps its own Detection tuning (popup → Detection tab).
+const VAD_STORAGE_KEY = { gemini: "vadSettings", local: "localVadSettings" };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg?.action) {
@@ -34,6 +43,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case "DEBUG_LOG":
       appendDebugLog(msg.payload?.line);
       return;
+    case "GET_VIDEO_TIME":
+      // Offscreen can't reach tabs; ask the overlay for the video position.
+      if (activeTabId === null) {
+        sendResponse(null);
+        return;
+      }
+      chrome.tabs
+        .sendMessage(activeTabId, { action: "GET_VIDEO_TIME" })
+        .then(sendResponse, () => sendResponse(null));
+      return true;
+    case "SUBTITLE_CUE":
+      appendCue(msg.cue);
+      return;
     case "STATUS_UPDATE":
       relayToTab(msg);
       appendDebugLog(
@@ -53,18 +75,26 @@ async function startCapture(tabId) {
   if (!Number.isInteger(tabId)) throw new Error("No target tab");
   const {
     apiKey = "",
+    backend = DEFAULT_BACKEND,
+    localServerUrl = DEFAULT_LOCAL_SERVER_URL,
     silenceGate = true,
     targetLang = DEFAULT_TARGET_LANG,
     totalUsd = 0,
     vadSettings,
+    localVadSettings,
   } = await chrome.storage.local.get([
     "apiKey",
+    "backend",
+    "localServerUrl",
     "silenceGate",
     "targetLang",
     "totalUsd",
     "vadSettings",
+    "localVadSettings",
   ]);
-  if (!apiKey && !DEBUG_FAKE_SUBTITLES) {
+  // The local pipeline checks the language itself (Thai needs its Ollama
+  // engine) and reports a clear error over the socket.
+  if (backend !== "local" && !apiKey && !DEBUG_FAKE_SUBTITLES) {
     throw new Error("Save your Gemini API key first");
   }
 
@@ -93,14 +123,22 @@ async function startCapture(tabId) {
     action: "OFFSCREEN_START",
     streamId,
     apiKey,
-    settings: { silenceGate, targetLang, vadSettings },
+    settings: {
+      backend,
+      localServerUrl,
+      silenceGate,
+      targetLang,
+      vadSettings: backend === "local" ? localVadSettings : vadSettings,
+    },
     baseTotalUsd: totalUsd,
   });
   if (res && res.ok === false) throw new Error(res.error || "capture failed");
 
   activeTabId = tabId;
+  activeBackend = backend;
   running = true;
-  appendDebugLog(`capture started on tab ${tabId}`);
+  resetSubtitleLog();
+  appendDebugLog(`capture started on tab ${tabId} (backend: ${backend})`);
 }
 
 async function stopCapture({ silent = false } = {}) {
@@ -126,6 +164,7 @@ async function stopCapture({ silent = false } = {}) {
     });
   }
   activeTabId = null;
+  activeBackend = null;
 }
 
 async function ensureOffscreenDocument() {
@@ -158,6 +197,34 @@ function appendDebugLog(line) {
   });
 }
 
+// Subtitle file log (popup → Download subtitles). Kept in
+// chrome.storage.local so it outlives the offscreen document and the
+// popup; each Start begins a new log. Serialized like the debug log.
+let cueChain = Promise.resolve();
+function resetSubtitleLog() {
+  cueChain = cueChain.then(() =>
+    chrome.storage.local.set({ subtitleLog: [], subtitleLogStartedAt: Date.now() })
+  );
+}
+function appendCue(cue) {
+  if (!cue) return;
+  cueChain = cueChain
+    .then(async () => {
+      const { subtitleLog = [] } = await chrome.storage.local.get("subtitleLog");
+      // Gemini can deliver one window's turn in two pieces, and cues can
+      // land out of order (each waits for its own window's end time).
+      const same = subtitleLog.findLast((c) => c.seq === cue.seq);
+      if (same) {
+        same.jp = [same.jp, cue.jp].filter(Boolean).join(" ");
+        same.en = [same.en, cue.en].filter(Boolean).join(" ");
+      } else {
+        subtitleLog.push(cue);
+      }
+      await chrome.storage.local.set({ subtitleLog });
+    })
+    .catch((e) => appendDebugLog(`subtitle file write failed: ${e.message || e}`));
+}
+
 function relayToTab(msg) {
   if (activeTabId === null) return;
   chrome.tabs.sendMessage(activeTabId, msg).catch(() => {
@@ -165,14 +232,16 @@ function relayToTab(msg) {
   });
 }
 
-// Live-applied settings (silence gate toggle, target language). API key
-// changes apply on the next Start.
+// Live-applied settings (silence gate toggle, target language, the running
+// backend's Detection tuning). API key, backend and server URL changes
+// apply on the next Start.
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== "local" || !running) return;
   const settings = {};
   if (changes.silenceGate) settings.silenceGate = changes.silenceGate.newValue;
   if (changes.targetLang) settings.targetLang = changes.targetLang.newValue;
-  if (changes.vadSettings) settings.vadSettings = changes.vadSettings.newValue;
+  const vadKey = VAD_STORAGE_KEY[activeBackend];
+  if (changes[vadKey]) settings.vadSettings = changes[vadKey].newValue;
   if (Object.keys(settings).length === 0) return;
   try {
     await chrome.runtime.sendMessage({

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "HoloLiveTL Live — real-time JP subtitles",
   "version": "0.1.0",
-  "description": "Live Japanese subtitles with English or Thai translation for any tab, streamed via the Gemini Live API over WebSockets.",
+  "description": "Live Japanese subtitles with English or Thai translation for any tab, via the Gemini Live API or a local HoloLiveTL pipeline.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting"],
   "host_permissions": ["https://generativelanguage.googleapis.com/*"],

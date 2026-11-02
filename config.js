@@ -99,6 +99,26 @@ export const VAD_SETTINGS = {
   maxActiveS: 3.5,
 };
 
+// Subtitle backend, picked in the popup (applies on the next Start):
+//   "gemini"  the Gemini Live API (cloud, billed per audio minute, EN or TH)
+//   "local"   the HOLOTLLOCAL pipeline server on this machine — HoloLiveTL's
+//             kotoba-whisper + FuguMT on your own GPU; free. English, or
+//             Thai when the server runs its Ollama translation engine
+export const DEFAULT_BACKEND = "gemini";
+export const DEFAULT_LOCAL_SERVER_URL = "ws://127.0.0.1:8765";
+
+// Detection defaults for the local backend. Whisper decodes whole
+// utterances, so it wants sentence-length windows rather than the short
+// streaming turns above: the desktop app's dynamic-chunking defaults
+// (0.9 s end-of-speech pause, 8 s max). softCutAfterS = maxActiveS turns
+// the breath-dip cut off — the desktop app only cuts at a real pause.
+export const LOCAL_VAD_SETTINGS = {
+  ...VAD_SETTINGS,
+  silenceTimeoutS: 0.9,
+  softCutAfterS: 8,
+  maxActiveS: 8,
+};
+
 // Each VAD speech window is bracketed by the Live API's manual activity
 // signals (activityStart when speech begins, activityEnd on the silence
 // timeout, with the server's automatic detection disabled in setup), so
@@ -121,6 +141,10 @@ export const MAX_CONSECUTIVE_FAILURES = 10;
 // Overlay appearance defaults (popup → Appearance tab). The overlay content
 // script can't import this module — keep content/overlay.js's
 // APPEARANCE_DEFAULTS in sync when editing.
+// Show the Japanese line above the translation (popup → Show), on screen
+// and in the downloaded .srt. Keep in sync with content/overlay.js.
+export const DEFAULT_SHOW_JP = true;
+
 export const DEFAULT_APPEARANCE = {
   fontSizePx: 24, // JP line; translation line renders at 80%
   jpColor: "#ffffff",

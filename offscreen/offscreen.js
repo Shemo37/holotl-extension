@@ -1,11 +1,13 @@
 // Offscreen document: owns the tab-audio capture, the 16 kHz PCM pipeline,
 // the audible passthrough, the Silero VAD chunker (with an RMS silence-gate
-// fallback), the Gemini Live client, and the cost meter. Created/destroyed
-// by background.js.
+// fallback), the subtitle client — Gemini Live, or the local HOLOTLLOCAL
+// pipeline server — and the cost meter. Created/destroyed by background.js.
 
 import * as CFG from "../config.js";
 import { GeminiLiveClient } from "./gemini-client.js";
+import { LocalPipelineClient } from "./local-client.js";
 import { SileroVad, DynamicChunker } from "./vad.js";
+import { CueTimer } from "./cue-timer.js";
 
 let client = null;
 let mediaStream = null;
@@ -15,9 +17,11 @@ let workletNode = null;
 let running = false;
 
 let settings = {
+  backend: CFG.DEFAULT_BACKEND,
+  localServerUrl: CFG.DEFAULT_LOCAL_SERVER_URL,
   silenceGate: true,
   targetLang: CFG.DEFAULT_TARGET_LANG,
-  vadSettings: null, // popup overrides for CFG.VAD_SETTINGS
+  vadSettings: null, // popup overrides for the backend's VAD defaults
 };
 let apiKey = "";
 
@@ -30,7 +34,8 @@ function clampNum(v, def, lo, hi) {
 }
 
 function effectiveVadSettings() {
-  const d = CFG.VAD_SETTINGS;
+  const d =
+    settings.backend === "local" ? CFG.LOCAL_VAD_SETTINGS : CFG.VAD_SETTINGS;
   const s = settings.vadSettings || {};
   return {
     vadThreshold: clampNum(s.vadThreshold, d.vadThreshold, 0.05, 0.95),
@@ -64,7 +69,17 @@ let baseTotalUsd = 0; // all-time total persisted before this session began
 let costTimer = null;
 let fakeTimer = null;
 
+// Subtitle file (popup → Download subtitles): cues timed against the page
+// video; background keeps the session's log.
+const cueTimer = new CueTimer({
+  getVideoTime: () => chrome.runtime.sendMessage({ action: "GET_VIDEO_TIME" }),
+  onCue: (cue) => broadcast({ action: "SUBTITLE_CUE", cue }),
+  onNoVideo: () =>
+    debugLog("subtitle file: no <video> found — timestamps use time since Start"),
+});
+
 function sessionUsd() {
+  if (settings.backend === "local") return 0; // runs on the user's own GPU
   return (sentSamples / 16000 / 60) * CFG.PRICE_PER_MIN;
 }
 
@@ -116,6 +131,7 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
   apiKey = key || "";
   settings = { ...settings, ...s };
   sentSamples = 0;
+  cueTimer.reset();
   sessionStartedAt = Date.now();
   lastLoudAt = Date.now();
   batchFrames = [];
@@ -127,6 +143,18 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
   if (CFG.DEBUG_FAKE_SUBTITLES) {
     startFakeMode();
     return;
+  }
+
+  // Whisper needs utterance boundaries, so the local backend has no
+  // RMS-gate streaming fallback — check before capturing anything.
+  if (
+    settings.backend === "local" &&
+    !(CFG.USE_SILERO_VAD && (await getSileroVad()))
+  ) {
+    throw new Error(
+      "the local pipeline needs Silero VAD to cut utterances, and it " +
+        "isn't available (see the Debug tab)"
+    );
   }
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -148,12 +176,25 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
 
   const vad = CFG.USE_SILERO_VAD ? await getSileroVad() : null;
   vadActive = vad !== null;
+  if (!vadActive) {
+    debugLog("subtitle file: no VAD windows to time — this session records no lines");
+  }
   if (vadActive) {
-    chunker = new DynamicChunker(vad, effectiveVadSettings(), {
-      onSpeechStart: onSpeechStart,
-      onSpeechFrame: queueSpeechFrame,
-      onSpeechEnd: onSpeechEnd,
-    });
+    chunker = new DynamicChunker(
+      vad,
+      effectiveVadSettings(),
+      settings.backend === "local"
+        ? {
+            onSpeechStart: onUtteranceStart,
+            onSpeechFrame: onUtteranceFrame,
+            onSpeechEnd: onUtteranceEnd,
+          }
+        : {
+            onSpeechStart: onSpeechStart,
+            onSpeechFrame: queueSpeechFrame,
+            onSpeechEnd: onSpeechEnd,
+          }
+    );
     chunker.reset();
   } else {
     chunker = null;
@@ -173,6 +214,10 @@ async function start({ streamId, apiKey: key, settings: s, baseTotalUsd: base })
 }
 
 function connectClient() {
+  if (settings.backend === "local") {
+    connectLocalClient();
+    return;
+  }
   const wantedManualActivity = CFG.MANUAL_ACTIVITY && vadActive;
   // The old client self-disables manualActivity after 2 sessions die before
   // any server message; carry that verdict into every future client.
@@ -194,8 +239,12 @@ function connectClient() {
     reconnectDelayMs: CFG.RECONNECT_DELAY_MS,
     maxConsecutiveFailures: CFG.MAX_CONSECUTIVE_FAILURES,
     debug: CFG.DEBUG,
-    onSubtitleUpdate: (payload) =>
-      broadcast({ action: "UPDATE_SUBTITLES", payload }),
+    onSubtitleUpdate: (payload) => {
+      broadcast({ action: "UPDATE_SUBTITLES", payload });
+      // Approximate: a Gemini turn lands while its window is still the
+      // newest (flushTurn runs before the next window is numbered).
+      cueTimer.recordCue(cueTimer.latestSeq, payload);
+    },
     onStatusChange: (status, message) => {
       // A reconnect (15-min session limit) can land mid-sentence: the new
       // session needs its own activityStart or window audio is ignored.
@@ -215,6 +264,27 @@ function connectClient() {
   client.connect();
 }
 
+function connectLocalClient() {
+  client?.disconnect();
+  client = new LocalPipelineClient({
+    url: settings.localServerUrl || CFG.DEFAULT_LOCAL_SERVER_URL,
+    targetLang: settings.targetLang,
+    reconnectDelayMs: CFG.RECONNECT_DELAY_MS,
+    maxConsecutiveFailures: CFG.MAX_CONSECUTIVE_FAILURES,
+    onSubtitleUpdate: (payload) => {
+      broadcast({ action: "UPDATE_SUBTITLES", payload });
+      // Exact: the server echoes the id each utterance was sent with.
+      cueTimer.recordCue(payload.utteranceId ?? cueTimer.latestSeq, payload);
+    },
+    onStatusChange: broadcastStatus,
+    onDebug: (line) => debugLog(line),
+  });
+  debugLog(
+    `connecting: backend=local, url=${client.url}, lang=${settings.targetLang}`
+  );
+  client.connect();
+}
+
 function stop() {
   const wasRunning = running;
   running = false;
@@ -227,6 +297,7 @@ function stop() {
   chunker = null;
   batchFrames = [];
   speechBatch = [];
+  utterance = [];
   try {
     workletNode?.disconnect();
   } catch {}
@@ -252,13 +323,18 @@ function applySettings(s) {
       `vad settings applied: ${JSON.stringify(effectiveVadSettings())}`
     );
   }
-  // The system instruction lives in the per-session setup message, so a
-  // language change needs a fresh session (~500 ms gap).
-  if (langChanged && running && client) connectClient();
+  // Gemini: the system instruction lives in the per-session setup message,
+  // so a language change needs a fresh session (~500 ms gap). Local: the
+  // server switches on a hello message over the open socket.
+  if (langChanged && running && client) {
+    if (settings.backend === "local") client.setTargetLang(settings.targetLang);
+    else connectClient();
+  }
 }
 
 function onFrame(frame) {
   if (!running || !client) return;
+  cueTimer.addSamples(frame.length);
   if (chunker) {
     chunker.push(frame); // Silero decides; speech windows stream live
     return;
@@ -272,11 +348,12 @@ function onFrame(frame) {
 const SPEECH_BATCH_FRAMES = 3;
 let speechBatch = [];
 
-function onSpeechStart(frames) {
+function onSpeechStart(frames, { startSample }) {
   if (!running || !client) return;
   // New utterance: pair up and display whatever the previous window left
   // pending (covers models that never send a turn marker).
   client.flushTurn();
+  cueTimer.beginWindow(startSample);
   client.startActivity();
   speechBatch = [];
   for (const f of frames) queueSpeechFrame(f);
@@ -304,14 +381,55 @@ function flushSpeechBatch() {
   }
 }
 
-function onSpeechEnd({ durationS, forced }) {
+function onSpeechEnd({ durationS, forced, speechEndSample }) {
   if (!client) return;
+  cueTimer.endWindow(cueTimer.latestSeq, speechEndSample);
   flushSpeechBatch();
   client.endActivity();
   debugLog(
     `utterance: ${durationS.toFixed(2)}s streamed live` +
       (forced ? " (max-length cut)" : "")
   );
+}
+
+// Local path: Whisper decodes whole utterances, so each VAD window is
+// buffered and sent to the pipeline server as one message when it closes.
+let utterance = [];
+let utteranceSeq = 0;
+
+function onUtteranceStart(frames, { startSample }) {
+  utterance = [...frames];
+  utteranceSeq = cueTimer.beginWindow(startSample);
+}
+
+function onUtteranceFrame(frame) {
+  utterance.push(frame);
+}
+
+function onUtteranceEnd({ durationS, forced, speechEndSample }) {
+  const frames = utterance;
+  utterance = [];
+  cueTimer.endWindow(utteranceSeq, speechEndSample);
+  if (!running || !client) return;
+  const total = frames.reduce((n, f) => n + f.length, 0);
+  const audio = new Float32Array(total);
+  let off = 0;
+  for (const f of frames) {
+    audio.set(f, off);
+    off += f.length;
+  }
+  const pcm = floatToPcm16(audio);
+  if (client.sendUtterance(pcm.buffer, utteranceSeq)) {
+    sentSamples += pcm.length;
+    debugLog(
+      `utterance: ${durationS.toFixed(2)}s sent to the local pipeline` +
+        (forced ? " (max-length cut)" : "")
+    );
+  } else {
+    debugLog(
+      `utterance: ${durationS.toFixed(2)}s dropped — local pipeline not ready`
+    );
+  }
 }
 
 // No-VAD path: continuous 160 ms batches behind the RMS silence gate (the
@@ -347,7 +465,7 @@ function fallbackStream(frame) {
   }
 }
 
-function floatToPcm16Base64(f32) {
+function floatToPcm16(f32) {
   const i16 = new Int16Array(f32.length);
   for (let i = 0; i < f32.length; i++) {
     let s = f32[i];
@@ -355,7 +473,11 @@ function floatToPcm16Base64(f32) {
     else if (s < -1) s = -1;
     i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
-  return arrayBufferToBase64(i16.buffer);
+  return i16;
+}
+
+function floatToPcm16Base64(f32) {
+  return arrayBufferToBase64(floatToPcm16(f32).buffer);
 }
 
 function arrayBufferToBase64(buffer) {

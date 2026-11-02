@@ -51,9 +51,15 @@ export class SileroVad {
 // AudioWorklet and are STREAMED while speech is active — nothing is
 // buffered until end-of-utterance, so the model hears (and starts
 // translating) the sentence while it is still being spoken. Handlers:
-//   onSpeechStart(frames)  window opened; frames = pre-roll + first frame
-//   onSpeechFrame(frame)   one live 512-sample frame inside the window
-//   onSpeechEnd(meta)      window closed ({durationS, forced})
+//   onSpeechStart(frames, {startSample})  window opened; frames = pre-roll
+//                                         + first frame
+//   onSpeechFrame(frame)                  one live 512-sample frame
+//   onSpeechEnd(meta)                     window closed ({durationS,
+//                                         forced, endSample,
+//                                         speechEndSample})
+// Sample positions count from the first pushed frame (reset() zeroes
+// them); speechEndSample excludes the trailing silence that closed the
+// window. They drive the subtitle file's timestamps.
 export class DynamicChunker {
   constructor(vad, settings, handlers) {
     this.vad = vad; // may be null → volume-based fallback
@@ -69,6 +75,7 @@ export class DynamicChunker {
     this.preroll = [];
     this.busy = false;
     this.pending = [];
+    this.framesPushed = 0;
   }
 
   applySettings(s) {
@@ -98,13 +105,16 @@ export class DynamicChunker {
     this.consecSpeechFrames = 0;
     this.preroll = [];
     this.pending = [];
+    this.framesPushed = 0;
     if (this.vad) this.vad.reset();
   }
 
   // Frames must be processed strictly in order (Silero carries LSTM state),
   // but ONNX inference is async — serialize through a small pending queue.
   push(frame) {
-    this.pending.push(frame);
+    // Index assigned on arrival, so a backlog drop below can't shift the
+    // sample positions of later frames.
+    this.pending.push({ frame, index: this.framesPushed++ });
     // Safety valve only: inference is ~1 ms/frame vs 32 ms arrival, so this
     // never trips unless the machine is drowning.
     if (this.pending.length > 300) {
@@ -118,9 +128,9 @@ export class DynamicChunker {
     this.busy = true;
     try {
       while (this.pending.length > 0) {
-        const frame = this.pending.shift();
+        const { frame, index } = this.pending.shift();
         try {
-          await this._processFrame(frame);
+          await this._processFrame(frame, index);
         } catch (e) {
           // One bad inference/emit drops one 32ms decision, never the loop.
           console.warn("[HoloTL Live] VAD frame processing failed:", e);
@@ -131,7 +141,7 @@ export class DynamicChunker {
     }
   }
 
-  async _processFrame(frame) {
+  async _processFrame(frame, index) {
     let sumSq = 0;
     let peak = 0;
     for (let i = 0; i < frame.length; i++) {
@@ -177,9 +187,13 @@ export class DynamicChunker {
       const ended = this.silenceFramesAfterSpeech > timeoutFrames || forced;
 
       if (ended) {
+        const endSample = (index + 1) * frame.length;
         this.onSpeechEnd({
           durationS: (this.streamedFrames * frame.length) / SAMPLE_RATE,
           forced,
+          endSample,
+          speechEndSample:
+            endSample - this.silenceFramesAfterSpeech * frame.length,
         });
         this.isSpeaking = false;
         this.streamedFrames = 0;
@@ -199,7 +213,9 @@ export class DynamicChunker {
         this.streamedFrames = startFrames.length;
         this.silenceFramesAfterSpeech = 0;
         this.consecSpeechFrames = 0;
-        this.onSpeechStart(startFrames);
+        this.onSpeechStart(startFrames, {
+          startSample: (index - startFrames.length + 1) * frame.length,
+        });
       }
     }
   }
