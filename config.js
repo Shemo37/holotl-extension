@@ -141,6 +141,10 @@ export const MAX_CONSECUTIVE_FAILURES = 10;
 // Overlay appearance defaults (popup → Appearance tab). The overlay content
 // script can't import this module — keep content/overlay.js's
 // APPEARANCE_DEFAULTS in sync when editing.
+// Show the Japanese line above the translation (popup → Show), on screen
+// and in the downloaded .srt. Keep in sync with content/overlay.js.
+export const DEFAULT_SHOW_JP = true;
+
 export const DEFAULT_APPEARANCE = {
   fontSizePx: 24, // JP line; translation line renders at 80%
   jpColor: "#ffffff",

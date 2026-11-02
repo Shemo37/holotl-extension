@@ -7,6 +7,7 @@
 import {
   DEFAULT_BACKEND,
   DEFAULT_LOCAL_SERVER_URL,
+  DEFAULT_SHOW_JP,
   DEFAULT_TARGET_LANG,
   DEFAULT_APPEARANCE,
   LOCAL_VAD_SETTINGS,
@@ -21,6 +22,7 @@ const keySaved = $("key-saved");
 const urlInput = $("local-url");
 const urlSaved = $("url-saved");
 const langSelect = $("target-lang");
+const showSelect = $("show-mode");
 const gateCheck = $("silence-gate");
 const startBtn = $("start");
 const stopBtn = $("stop");
@@ -67,6 +69,7 @@ async function init() {
     localServerUrl = DEFAULT_LOCAL_SERVER_URL,
     silenceGate = true,
     targetLang = DEFAULT_TARGET_LANG,
+    showJp = DEFAULT_SHOW_JP,
     totalUsd = 0,
     appearance: storedAppearance,
   } = await chrome.storage.local.get([
@@ -75,6 +78,7 @@ async function init() {
     "localServerUrl",
     "silenceGate",
     "targetLang",
+    "showJp",
     "totalUsd",
     "appearance",
   ]);
@@ -85,6 +89,7 @@ async function init() {
   urlInput.value = localServerUrl;
   gateCheck.checked = silenceGate;
   langSelect.value = targetLang;
+  showSelect.value = showJp ? "both" : "translation";
   renderCost(0, totalUsd);
 
   appearance = { ...DEFAULT_APPEARANCE, ...(storedAppearance || {}) };
@@ -154,6 +159,11 @@ langSelect.addEventListener("change", () => {
   chrome.storage.local.set({ targetLang: langSelect.value });
 });
 
+// The overlay watches storage.onChanged, so this applies live.
+showSelect.addEventListener("change", () => {
+  chrome.storage.local.set({ showJp: showSelect.value === "both" });
+});
+
 gateCheck.addEventListener("change", () => {
   chrome.storage.local.set({ silenceGate: gateCheck.checked });
 });
@@ -208,6 +218,11 @@ $("reset-appearance").addEventListener("click", () => {
   chrome.storage.local.set({ appearance });
 });
 
+// Back to centred, 10% above the bottom, on every tab.
+$("reset-position").addEventListener("click", () => {
+  chrome.storage.local.remove("overlayPosition");
+});
+
 // ---- detection tab ----
 
 async function loadVadSettings() {
@@ -251,10 +266,18 @@ async function renderSubtitleLog() {
 }
 
 $("download-srt").addEventListener("click", async () => {
-  const { subtitleLog = [], subtitleLogStartedAt = Date.now() } =
-    await chrome.storage.local.get(["subtitleLog", "subtitleLogStartedAt"]);
+  const {
+    subtitleLog = [],
+    subtitleLogStartedAt = Date.now(),
+    showJp = DEFAULT_SHOW_JP,
+  } = await chrome.storage.local.get([
+    "subtitleLog",
+    "subtitleLogStartedAt",
+    "showJp",
+  ]);
+  const srt = buildSrt(subtitleLog, { translationOnly: !showJp });
   // BOM: Windows players otherwise misread UTF-8 Japanese/Thai.
-  const blob = new Blob(["\ufeff" + buildSrt(subtitleLog)], {
+  const blob = new Blob(["\ufeff" + srt], {
     type: "application/x-subrip",
   });
   const url = URL.createObjectURL(blob);

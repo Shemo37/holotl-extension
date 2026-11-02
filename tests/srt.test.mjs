@@ -48,3 +48,18 @@ test("filename comes from the session start time", () => {
   const name = srtFilename(new Date(2026, 9, 28, 21, 5).getTime());
   assert.equal(name, "holotl-2026-10-28-2105.srt");
 });
+
+test("translation only: one line per cue, cues without a translation skipped", () => {
+  const cues = [
+    { start: 1, end: 3, jp: "こんにちは", en: "Hello" },
+    { start: 4, end: 6, jp: "うん", en: "" }, // no translation came back
+    { start: 7, end: 9, jp: "ありがとう", en: "Thank you" },
+  ];
+  assert.equal(
+    buildSrt(cues, { translationOnly: true }),
+    "1\r\n00:00:01,000 --> 00:00:03,000\r\nHello\r\n\r\n" +
+      "2\r\n00:00:07,000 --> 00:00:09,000\r\nThank you\r\n"
+  );
+  // default keeps both lines and the JP-only cue
+  assert.match(buildSrt(cues), /うん/);
+});

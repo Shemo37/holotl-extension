@@ -58,7 +58,8 @@ tab audio ─tabCapture─▶ offscreen document
    this extension with a key embedded — anyone could extract and bill it.**
 
 All settings live in `chrome.storage.local` under `backend`, `apiKey`,
-`localServerUrl`, `targetLang`, `silenceGate`, `appearance`, `vadSettings` /
+`localServerUrl`, `targetLang`, `showJp`, `silenceGate`, `appearance`,
+`overlayPosition`, `vadSettings` /
 `localVadSettings` (Detection tuning per backend), and `totalUsd` (all-time
 spend), next to the last session's subtitle file log (`subtitleLog`,
 `subtitleLogStartedAt`). Removing the extension clears all of them, key
@@ -67,17 +68,29 @@ included.
 ## Use
 
 1. Open the stream tab, start playback.
-2. Popup → pick **Translate to** (English default, or Thai) → **Start**.
+2. Popup → pick **Translate to** (English default, or Thai) and **Show**
+   (Japanese + translation, or Translation only) → **Start**.
 3. Subtitles appear in a draggable dark box (`JP` line on top, translation
    beneath), with a status dot: green connected, amber (re)connecting, red
-   error. Subtitles clear after 4 s of silence. **Stop** from the popup.
+   error. A line stays until the next one replaces it. **Stop** from the
+   popup clears the box.
 
-The popup has two tabs:
+The box keeps one size: room for two lines per language at your font size.
+A longer line shrinks its text to fit instead of moving or resizing the box,
+and the box stays anchored by its bottom edge. Drag it anywhere: the spot is
+saved as a share of the window, so it is the same on every tab, after a
+restart, and on another screen (it is pulled back inside the window if the
+window gets smaller). **Show: Translation only** hides the Japanese line,
+applies instantly, and also leaves Japanese out of the downloaded `.srt`.
+
+The popup has three tabs:
 
 - **Appearance** — font size, JP/translation text colors, text border
   (outline) width and color, and box background opacity. Every change
   applies to the overlay instantly (stored in `chrome.storage.local`, the
-  overlay watches for changes), with a reset-to-defaults button.
+  overlay watches for changes), with a reset-to-defaults button, and
+  **Reset subtitle position** to put the box back at the bottom centre.
+- **Detection** — VAD and chunking tuning, kept per backend.
 - **Debug** — the cost meter (session / all-time, plus audio-seconds sent
   vs wall-clock) and a rolling event log: connection opens, close
   codes/reasons, reconnects, status changes, and the first raw server frame.
@@ -207,6 +220,17 @@ canned subtitles and no API key/capture (for smoke tests only).
 ## Troubleshooting
 
 Open the popup's **Debug tab** first — it answers most of these.
+
+- **Subtitle box disappeared (e.g. after moving Chrome to another
+  screen)** — popup → Appearance → **Reset subtitle position**. The box is
+  normally pulled back into view on any resize; this is the escape hatch.
+- **Lines look duplicated after Stop → Start** — each Start replaces the
+  box (including one left behind by an extension update or reload), and
+  the local server drops lines from before the restart. If you still see
+  two boxes, reload the stream tab once.
+- **Odd lines nobody said ("the temperature in Tokyo…")** on the local
+  backend — the model inventing text from music or noise; see HOLOTLLOCAL's
+  README, "Invented lines", for the filters and how to tune them.
 
 - **No subtitles, dot stays green** — check the log: if frames are arriving
   but nothing renders, the response shape changed; grab the first-frame log

@@ -150,6 +150,7 @@
         display: inline-block;
       }
       #reset-appearance,
+      #reset-position,
       #reset-vad {
         margin-top: 12px;
         background: #3b3b4a;
@@ -216,8 +217,14 @@
 
     <label for="target-lang">Translate to</label>
     <select id="target-lang">
-      <option value="en">English (JP + EN)</option>
-      <option value="th">Thai (JP + TH)</option>
+      <option value="en">English</option>
+      <option value="th">Thai</option>
+    </select>
+
+    <label for="show-mode">Show</label>
+    <select id="show-mode">
+      <option value="both">Japanese + translation</option>
+      <option value="translation">Translation only</option>
     </select>
 
     <label class="toggle">
@@ -269,6 +276,7 @@
         <input id="bg-opacity" type="range" min="0" max="100" step="5" />
       </div>
       <button id="reset-appearance">Reset to defaults</button>
+      <button id="reset-position">Reset subtitle position</button>
     </div>
 
     <div id="tab-detection" class="tabpanel" hidden>
